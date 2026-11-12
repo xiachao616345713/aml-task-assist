@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AML 任务助手</title>
+  <link rel="stylesheet" href="/widget/styles.css?v=20261111-settings2">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">◆</span><span>AML 任务助手</span></div>
+      <button id="newConversation" class="primary wide">＋ 新建对话</button>
+      <div id="conversationCaption" class="section-caption">当前用户的历史对话</div>
+      <div id="conversations" class="conversation-list"></div>
+      <div class="sidebar-foot"><span id="identity">等待登录</span><span id="connection" class="connection"></span></div>
+    </aside>
+
+    <main class="chat-panel">
+      <header class="topbar"><div><h1>任务处理工作台</h1><p>整理资料、核对来源，预填审批资料</p></div><div class="topbar-actions"><button id="settingsButton" class="secondary" type="button">Token / 模型配置</button><button id="traceLink" class="text-button trace-pill" type="button">调用链</button></div></header>
+      <div id="notice" class="notice hidden" role="status"></div>
+      <div id="chatView" class="chat-view">
+        <div id="messages" class="messages" aria-live="polite">
+          <div class="empty-state"><div class="empty-icon">✦</div><h2>开始处理今天的任务</h2><p>可以问“我有多少待办？”或在右侧选择一个任务。</p></div>
+        </div>
+        <form id="chatForm" class="composer">
+          <label for="question" class="sr-only">发送消息</label>
+          <textarea id="question" rows="2" placeholder="询问待办、风险判断依据或材料要求…（Enter 发送，Shift+Enter 换行）" required></textarea>
+          <button type="submit" class="primary" id="sendButton">发送</button>
+        </form>
+      </div>
+      <section id="traceView" class="trace-view hidden" aria-label="调用链查询">
+        <div class="trace-toolbar"><h2>调用链</h2><form id="traceSearchForm"><input id="traceQuery" aria-label="Trace ID" placeholder="输入完整 Trace ID 或筛选最近记录"><button type="submit" class="secondary">查询</button></form></div>
+        <div class="trace-layout"><div id="traceList" class="trace-list"></div><div id="traceDetail" class="trace-detail"><p class="muted">选择一条调用链查看模型、工具和决策记录</p></div></div>
+      </section>
+    </main>
+
+    <aside class="task-panel">
+      <div class="panel-heading"><h2>我的待办</h2><button id="refreshTasks" class="text-button">刷新</button></div>
+      <div class="summary-card"><div class="summary-label">待处理总数</div><div id="taskTotal" class="summary-number">—</div><div id="taskTypes" class="summary-subtitle">登录后加载</div></div>
+      <div class="section-caption">风险待办</div>
+      <div id="riskTasks" class="task-list"></div>
+      <div class="section-caption">受益所有人核验</div>
+      <div id="bnfTasks" class="task-list"></div>
+      <div class="section-caption">补充材料</div>
+      <div id="materialTasks" class="task-list"></div>
+      <div class="section-caption">审核流程</div>
+      <div id="workflows" class="task-list"></div>
+    </aside>
+  </div>
+
+  <dialog id="materialDialog" class="dialog">
+    <form method="dialog" class="dialog-inner">
+      <div class="dialog-title"><h2 id="dialogTitle">补充材料</h2><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <p id="dialogDescription"></p>
+      <div id="dialogFiles"></div>
+      <label class="upload-label">选择材料文件<input type="file" id="materialFile" accept=".pdf,.png,.jpg,.jpeg,.docx,.txt,.csv,.json"></label>
+      <section id="prefillResult" aria-live="polite"></section>
+      <button type="button" id="generatePrefill" class="secondary">整理资料并生成预填</button>
+      <div class="dialog-actions"><button type="button" id="uploadButton" class="secondary">上传文件</button><button type="button" id="submitMaterial" class="primary">提交材料并继续</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="decisionDialog" class="dialog">
+    <form method="dialog" class="dialog-inner">
+      <div class="dialog-title"><h2>高风险人工审核</h2><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <p>材料已补齐。请核实业务内容后填写审核依据。此操作会向原系统提交审批。</p>
+      <label for="decisionReason">审核意见</label>
+      <textarea id="decisionReason" rows="6" minlength="20" maxlength="1000" placeholder="至少 20 字，写明具体核查依据"></textarea>
+      <div class="dialog-actions"><button type="button" id="submitDecision" class="primary">确认通过并提交</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="sourceDialog" class="dialog source-dialog">
+    <div class="dialog-inner">
+      <div class="dialog-title"><h2 id="sourceTitle">资料来源</h2><button type="button" id="closeSource" class="icon-button" aria-label="关闭来源">×</button></div>
+      <p id="sourceMeta"></p><div id="sourceContent"></div>
+      <button type="button" id="downloadSource" class="secondary">下载原资料</button>
+    </div>
+  </dialog>
+  <dialog id="settingsDialog" class="dialog">
+    <form id="settingsForm" class="dialog-inner">
+      <div class="dialog-title"><h2>Token 与模型配置</h2><button type="button" id="closeSettings" class="icon-button" aria-label="关闭配置">×</button></div>
+      <p>配置保存在数据库中，保存后生效。已保存的凭证留空保持原值。</p>
+      <label>业务系统 Token<input id="businessToken" type="password" autocomplete="off" maxlength="4096"></label>
+      <label><input id="clearBusinessToken" type="checkbox">清除业务 Token</label>
+      <label>模型名称<input id="modelName" required maxlength="255"></label>
+      <label>模型 API 地址<input id="modelBaseUrl" type="url" required placeholder="https://example.com/v1"></label>
+      <label>模型 API Key<input id="modelApiKey" type="password" autocomplete="off" maxlength="4096"></label>
+      <label><input id="clearModelApiKey" type="checkbox">清除模型 API Key</label>
+      <label>超时（秒）<input id="modelTimeout" type="number" min="5" max="600" required></label>
+      <label>最大输出 Token<input id="modelMaxTokens" type="number" min="100" max="1000000" required></label>
+      <div class="dialog-actions"><button id="saveSettings" type="submit" class="primary">保存配置</button></div>
+    </form>
+  </dialog>
+  <script src="/widget/app.js?v=20261111-settings2" defer></script>
+</body>
+</html>
