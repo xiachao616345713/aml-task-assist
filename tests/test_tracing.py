@@ -42,6 +42,18 @@ class TraceUnitTests(unittest.TestCase):
         self.assertEqual(trace.as_dict()["dropped_events"], 1)
         self.assertEqual(trace.as_dict()["total_tokens"]["total"], 7)
 
+    def test_trace_metrics_count_model_tool_and_error_events(self):
+        trace = Trace("test", "alice")
+        trace.record("model", "chat_model", token_usage={"input_tokens": 5, "output_tokens": 2})
+        trace.record("tool", "get_tasks", input={"page": 1})
+        trace.record("tool_failure", "get_tasks", "error", error_code="backend_down")
+        payload = trace.as_dict()
+        self.assertEqual(payload["model_calls"], 1)
+        self.assertEqual(payload["tool_calls"], 1)
+        self.assertEqual(payload["error_count"], 1)
+        self.assertEqual(payload["status"], "degraded")
+        self.assertGreaterEqual(payload["duration_ms"], 0)
+
     def test_payload_redacts_secret_keys_and_known_token(self):
         payload = safe_payload({"token": "abc", "nested": {"X-Access-Token": "abc"},
                                 "text": "Bearer abc and abc"}, ("abc",))

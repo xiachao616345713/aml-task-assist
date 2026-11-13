@@ -70,6 +70,15 @@ class BackendStub:
 
 
 class PolicyTests(unittest.TestCase):
+    def test_policy_output_has_business_rules_without_developer_source_paths(self):
+        from task_assist.aml.policy import policy_for, summarize
+        policy = policy_for("risk")
+        self.assertIn("中低风险", policy["reason"])
+        self.assertNotIn("source", policy)
+        summary = summarize([{"processType": "risk", "taskNum": 2}])
+        self.assertNotIn("fxq_portal", str(summary))
+        self.assertNotIn("aml_boot", str(summary))
+
     def test_summary_and_bnf_policy(self):
         data = summarize([{"processType": "bnfValidate", "processTypeName": "受益所有人核验", "taskNum": 3}])
         self.assertEqual(data["total"], 3)

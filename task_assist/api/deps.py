@@ -15,7 +15,8 @@ from task_assist.features.review.contracts import UnsupportedWorkflow
 from task_assist.infrastructure.state_store import ResourceNotFound, StateConflict
 
 
-def get_service(request: Request, x_access_token: str | None = Header(default=None)) -> Generator[TaskService, None, None]:
+def resolve_service(request: Request, x_access_token: str | None) -> TaskService:
+    """构建业务会话；流式端点自行管理其生命周期，不走 Depends 的退出时序。"""
     if (x_access_token is None and is_local_request(request)
             and request.headers.get("X-Use-Saved-Token") == "true"):
         require_local_settings(request)
@@ -23,13 +24,36 @@ def get_service(request: Request, x_access_token: str | None = Header(default=No
     if not x_access_token or len(x_access_token) > 4096:
         raise HTTPException(status_code=401, detail="缺少 X-Access-Token")
     try:
-        service = new_service(x_access_token, request.state.trace)
+        return new_service(x_access_token, request.state.trace)
     except BackendError as exc:
         raise HTTPException(status_code=401, detail="登录失效或身份验证失败") from exc
+
+
+def get_service(request: Request, x_access_token: str | None = Header(default=None)) -> Generator[TaskService, None, None]:
+    service = resolve_service(request, x_access_token)
     try:
         yield service
     finally:
         service.backend.close()
+
+
+def http_error(exc: Exception) -> HTTPException:
+    """业务异常到 HTTP 状态的统一映射；run_traced 与流式端点共用。"""
+    if isinstance(exc, PermissionDenied):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, ResourceNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, (TaskRejected, StateConflict, UnsupportedWorkflow)):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, BackendError):
+        return HTTPException(status_code=502, detail=str(exc))
+    if isinstance(exc, AgentBusy):
+        return HTTPException(status_code=429, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=422, detail="请求参数无效")
+    if isinstance(exc, RuntimeError):
+        return HTTPException(status_code=503, detail="执行暂不可用，请根据 X-Trace-Id 查询调用链")
+    return HTTPException(status_code=503, detail="执行失败，请根据 X-Trace-Id 查询调用链")
 
 
 def run_traced(request: Request, name: str, fn):
@@ -37,20 +61,11 @@ def run_traced(request: Request, name: str, fn):
     try:
         with trace.step("operation", name):
             return {"trace_id": trace.id, "data": fn(trace)}
-    except PermissionDenied as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ResourceNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (TaskRejected, StateConflict, UnsupportedWorkflow) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except BackendError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except AgentBusy as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="请求参数无效") from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="执行暂不可用，请根据 X-Trace-Id 查询调用链") from exc
+    except HTTPException:
+        raise
     except Exception as exc:
-        trace.record("operation", name, "error", error_type=type(exc).__name__)
-        raise HTTPException(status_code=503, detail="执行失败，请根据 X-Trace-Id 查询调用链") from exc
+        if not isinstance(exc, (PermissionDenied, ResourceNotFound, TaskRejected,
+                                StateConflict, UnsupportedWorkflow, BackendError,
+                                AgentBusy, ValueError, RuntimeError)):
+            trace.record("operation", name, "error", error_type=type(exc).__name__)
+        raise http_error(exc) from exc

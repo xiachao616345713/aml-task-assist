@@ -20,14 +20,19 @@ if TYPE_CHECKING:
 
 class AutoSubmitter:
     def __init__(self, service_factory: Callable[[Trace], TaskService], ledger: SubmissionLedger,
-                 audit_store: StateStore | None = None, lock_provider=None):
+                 audit_store: StateStore | None = None, lock_provider=None, should_continue=None):
         self.service_factory = service_factory
         self.ledger = ledger
         self.audit_store = audit_store
         self.lock_provider = lock_provider
+        self.should_continue = should_continue or (lambda: True)
         self._run_lock = threading.Lock()
 
-    def run_once(self, trace: Trace, limit: int = config.MAX_AUTO_SUBMIT_PER_RUN) -> dict:
+    def run_once(self, trace: Trace, limit: int | None = None) -> dict:
+        if limit is None:
+            limit = config.MAX_AUTO_SUBMIT_PER_RUN
+        if not self.should_continue():
+            return {"cancelled": True, "submitted": []}
         # 多实例只允许一个扫描器推进；提交幂等记录仍是最终防线。
         lock = self.lock_provider("auto_submit") if self.lock_provider else nullcontext()
         with lock:
@@ -47,7 +52,11 @@ class AutoSubmitter:
                     candidates = []
                     page = 1
                     detail_total = risk_count
+                    cancelled = False
                     while risk_count > 0 and page <= 50:
+                        if not self.should_continue():
+                            cancelled = True
+                            break
                         batch = service.risk_page(trace, page, 100)
                         rows = batch["records"]
                         detail_total = int(batch["total"])
@@ -65,9 +74,13 @@ class AutoSubmitter:
                         "uncertain": [],
                         "remaining_unscanned": max(0, detail_total - len(candidates)),
                         "deferred_due_to_limit": 0,
+                        "cancelled": cancelled,
                     }
                     seen = set()
                     for row in candidates:
+                        if not self.should_continue():
+                            result["cancelled"] = True
+                            break
                         task_id, act_id = row.get("task_id"), row.get("act_id")
                         if not task_id or task_id in seen:
                             continue
@@ -84,6 +97,9 @@ class AutoSubmitter:
                             result["skipped"].append({"task_id": task_id, "reason": f"本地提交记录: {existing}"})
                             continue
                         try:
+                            if not self.should_continue():
+                                result["cancelled"] = True
+                                break
                             submitted = service.approve_risk(trace, task_id, act_id, ledger=self.ledger)
                             result["submitted"].append(submitted)
                             if self.audit_store:
@@ -99,7 +115,7 @@ class AutoSubmitter:
                     trace.record("automation", "run_summary",
                                  scanned=result["scanned"], submitted=len(result["submitted"]),
                                  skipped=len(result["skipped"]), errors=len(result["errors"]),
-                                 uncertain=len(result["uncertain"]))
+                                 uncertain=len(result["uncertain"]), cancelled=result["cancelled"])
                     return result
                 finally:
                     close = getattr(service.backend, "close", None)
@@ -110,10 +126,12 @@ class AutoSubmitter:
 
 
 class AutoSubmitScheduler:
-    def __init__(self, submitter: AutoSubmitter, trace_store, interval: int):
+    def __init__(self, submitter: AutoSubmitter, trace_store, interval: int, settings_provider=None):
         self.submitter = submitter
         self.trace_store = trace_store
         self.interval = interval
+        self.settings_provider = settings_provider
+        self.last_run = None
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
 
@@ -130,19 +148,34 @@ class AutoSubmitScheduler:
             self.thread.join(timeout=5)
 
     def _loop(self) -> None:
-        # 启动后立即执行，以后按间隔轮询。
         while not self.stop_event.is_set():
-            from task_assist.infrastructure.telemetry import Trace
-
-            trace = Trace("scheduled_auto_submit")
             try:
-                self.submitter.run_once(trace)
+                self._tick()
             except Exception as exc:
-                trace.record("automation", "run_once", "error", error_type=type(exc).__name__)
-            finally:
-                try:
-                    self.trace_store.save(trace)
-                except Exception as exc:
-                    # 观测库故障不应永久停止后台扫描线程。
-                    logging.getLogger(__name__).error("定时扫描 Trace 保存失败: %s", type(exc).__name__)
-            self.stop_event.wait(self.interval)
+                logging.getLogger(__name__).error("定时扫描失败: %s", type(exc).__name__)
+                # 配置库不可用时不持续高频重试。
+                if self.stop_event.wait(60):
+                    break
+                continue
+            self.stop_event.wait(5 if self.settings_provider else self.interval)
+
+    def _tick(self) -> None:
+        # 每轮读取数据库，使多进程部署也能在下一轮使用页面保存的配置。
+        values = self.settings_provider() if self.settings_provider else {
+            "auto_submit_enabled": True, "auto_submit_interval_seconds": self.interval,
+            "max_auto_submit_per_run": config.MAX_AUTO_SUBMIT_PER_RUN}
+        if not values["auto_submit_enabled"]:
+            self.last_run = None
+            return
+        now = time.monotonic()
+        if self.last_run is not None and now - self.last_run < values["auto_submit_interval_seconds"]:
+            return
+        from task_assist.infrastructure.trace_store import NullTrace
+        trace = NullTrace()
+        try:
+            self.submitter.run_once(trace, limit=values["max_auto_submit_per_run"])
+        except Exception as exc:
+            trace.record("automation", "run_once", "error", error_type=type(exc).__name__)
+        finally:
+            # 按完成时间计间隔，避免一次长扫描结束后立即重跑。
+            self.last_run = time.monotonic()

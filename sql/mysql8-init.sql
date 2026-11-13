@@ -112,10 +112,20 @@ CREATE TABLE IF NOT EXISTS traces_v2 (
   conversation_id CHAR(32),
   workflow_id CHAR(32),
   name VARCHAR(255) NOT NULL,
+  -- 看板聚合摘要列（与 data JSON 冗余）；避免每次统计都解析 LONGTEXT。
+  status VARCHAR(16),
+  duration_ms DOUBLE,
+  input_tokens BIGINT,
+  output_tokens BIGINT,
+  total_tokens BIGINT,
+  model_calls BIGINT,
+  tool_calls BIGINT,
+  error_count BIGINT,
   KEY idx_traces_owner_created (owner_id, created_at DESC),
   KEY idx_traces_conversation (owner_id, conversation_id, created_at DESC),
   KEY idx_traces_workflow (owner_id, workflow_id, created_at DESC),
   KEY idx_traces_name (owner_id, name, created_at DESC),
+  KEY idx_traces_owner_status_created (owner_id, status, created_at DESC),
   CONSTRAINT chk_trace_json CHECK (JSON_VALID(data))
 ) ENGINE=InnoDB;
 
@@ -123,6 +133,11 @@ CREATE TABLE IF NOT EXISTS traces_v2 (
 CREATE TABLE IF NOT EXISTS app_settings (
   id VARCHAR(32) PRIMARY KEY,
   business_token TEXT NOT NULL,
+  aml_base_url VARCHAR(2048) NULL,
+  scheduler_aml_token TEXT NULL,
+  auto_submit_enabled BOOLEAN NULL,
+  auto_submit_interval_seconds BIGINT NULL,
+  max_auto_submit_per_run BIGINT NULL,
   model_name VARCHAR(255) NOT NULL,
   model_base_url VARCHAR(2048) NOT NULL,
   model_api_key TEXT NOT NULL,

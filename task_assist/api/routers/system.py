@@ -41,6 +41,23 @@ def me(service: TaskService = Depends(get_service)):
     return {"user_id": service.actor.user_id, "username": service.actor.username,
             "capabilities": service.capabilities()}
 
+@router.get("/api/traces/dashboard")
+def trace_dashboard(since: float | None = None, until: float | None = None,
+                    status: str | None = None, name: str | None = None,
+                    conversation_id: str | None = None, workflow_id: str | None = None,
+                    limit: int = 50, service: TaskService = Depends(get_service)):
+    """链路质量看板：按筛选条件返回聚合指标与最近明细。"""
+    if status and status not in {"ok", "degraded", "error"}:
+        raise HTTPException(status_code=422, detail="status 只支持 ok/degraded/error")
+    if not 1 <= limit <= 200:
+        raise HTTPException(status_code=422, detail="limit 必须为 1–200")
+    if name and len(name) > 100:
+        raise HTTPException(status_code=422, detail="name 过长")
+    return trace_store.dashboard(service.actor.user_id, since=since, until=until,
+                                 status=status, name=name, conversation_id=conversation_id,
+                                 workflow_id=workflow_id, limit=limit)
+
+
 @router.get("/api/traces/{trace_id}")
 def trace_detail(trace_id: str, service: TaskService = Depends(get_service)):
     if len(trace_id) != 32 or not all(c in "0123456789abcdef" for c in trace_id):

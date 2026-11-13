@@ -30,6 +30,32 @@ def sqlite_upsert(element, compiler, **kw):
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_conversation_title_uses_first_question_and_survives_reopen(self):
+        store = StateStore(self.db)
+        chat = store.create_conversation("alice")
+        store.add_message(chat["id"], "alice", "user", "  我有多少\n风险待办？  ", None)
+        self.assertEqual(store.conversation(chat["id"], "alice")["title"], "我有多少 风险待办？")
+        store.add_message(chat["id"], "alice", "user", "再查一下受益所有人", None)
+        self.assertEqual(StateStore(self.db).conversations("alice")[0]["title"], "我有多少 风险待办？")
+        self.assertEqual(store.conversations("bob"), [])
+        named = store.create_conversation("alice", "人工指定名称")
+        store.add_message(named["id"], "alice", "user", "第一条问题", None)
+        self.assertEqual(store.conversation(named["id"], "alice")["title"], "人工指定名称")
+
+    def test_legacy_default_titles_use_first_message_and_long_titles_are_bounded(self):
+        from task_assist.infrastructure.models import Conversations
+        store = StateStore(self.db)
+        chat = store.create_conversation("alice")
+        question = "需要核查的风险任务" * 12
+        store.add_message(chat["id"], "alice", "user", question, None)
+        with self.db.orm_session() as db:
+            db.get(Conversations, chat["id"]).title = "新对话"
+        title = store.conversations("alice")[0]["title"]
+        self.assertEqual(len(title), 40)
+        self.assertTrue(title.endswith("…"))
+        store.add_message(chat["id"], "alice", "user", "新的追问", None)
+        self.assertEqual(store.conversation(chat["id"], "alice")["title"], title)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.db = MySQLDatabase.__new__(MySQLDatabase)
@@ -61,10 +87,88 @@ class PersistenceTests(unittest.TestCase):
     def test_next_model_uses_saved_configuration(self):
         self.settings.save(dict(model_name="next-model", model_base_url="https://model.test/v1",
                                 model_timeout=50, model_max_tokens=4321, model_api_key="secret"))
-        with patch("langchain_openai.ChatOpenAI") as factory:
+        with patch("task_assist.infrastructure.chat_model.ObservableChatOpenAI") as factory:
             self.settings.model()
         self.assertEqual(factory.call_args.kwargs["model"], "next-model")
         self.assertEqual(factory.call_args.kwargs["api_key"], "secret")
+
+    def test_business_settings_preserve_clear_and_override_environment(self):
+        with patch("task_assist.config.SCHEDULER_AML_TOKEN", "env-secret"), patch("task_assist.config.AUTO_SUBMIT_ENABLED", True):
+            self.assertEqual(self.settings.get()["scheduler_aml_token"], "env-secret")
+            public = self.settings.save(dict(aml_base_url="https://aml.test/api", scheduler_aml_token="scheduler-secret",
+                auto_submit_enabled=False, auto_submit_interval_seconds=120, max_auto_submit_per_run=3))
+            self.assertNotIn("scheduler-secret", str(public))
+            self.assertNotIn("scheduler_aml_token", public)
+            self.assertTrue(public["scheduler_aml_token_configured"])
+            self.settings.save(dict(max_auto_submit_per_run=4))
+            self.assertEqual(self.settings.get()["scheduler_aml_token"], "scheduler-secret")
+            self.assertFalse(self.settings.get()["auto_submit_enabled"])
+            self.settings.save(dict(scheduler_aml_token=""))
+            self.assertEqual(self.settings.get()["scheduler_aml_token"], "")
+            self.assertFalse(self.settings.public()["scheduler_aml_token_configured"])
+
+    def test_settings_upgrade_existing_table_without_business_columns(self):
+        from task_assist.infrastructure.models import AppSettings
+        AppSettings.__table__.drop(self.db.engine)
+        with self.db.engine.begin() as connection:
+            connection.exec_driver_sql("""CREATE TABLE app_settings (
+                id VARCHAR(32) PRIMARY KEY, business_token TEXT NOT NULL,
+                model_name VARCHAR(255) NOT NULL, model_base_url VARCHAR(2048) NOT NULL,
+                model_api_key TEXT NOT NULL, model_timeout DOUBLE NOT NULL, model_max_tokens BIGINT NOT NULL)""")
+            connection.exec_driver_sql("""INSERT INTO app_settings VALUES
+                ('default', 'existing-token', 'existing-model', 'https://model.test', 'existing-key', 30, 1200)""")
+        store = SettingsStore(self.db)
+        self.assertEqual(store.get()["business_token"], "existing-token")
+        store.save(dict(auto_submit_enabled=False, auto_submit_interval_seconds=90))
+        self.assertEqual(store.get()["auto_submit_interval_seconds"], 90)
+        self.assertEqual(store.get()["model_name"], "existing-model")
+
+    def test_business_settings_http_without_model_and_validation(self):
+        app = FastAPI()
+        app.include_router(settings.router)
+        with patch.object(settings, "settings_store", self.settings):
+            with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 1234)) as client:
+                self.assertEqual(client.put("/api/settings", json={"auto_submit_enabled": True}).status_code, 422)
+                payload = dict(aml_base_url="https://aml.test/api/", scheduler_aml_token="scheduler-secret",
+                    auto_submit_enabled=True, auto_submit_interval_seconds=60, max_auto_submit_per_run=2)
+                response = client.put("/api/settings", json=payload)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["aml_base_url"], "https://aml.test/api")
+                self.assertNotIn("scheduler-secret", response.text)
+                for invalid in ({"auto_submit_interval_seconds": 59}, {"max_auto_submit_per_run": 101},
+                                {"max_auto_submit_per_run": 0}, {"aml_base_url": "file:///tmp/aml"},
+                                {"aml_base_url": "https://user:password@aml.test"}, {"scheduler_aml_token": ""}):
+                    self.assertEqual(client.put("/api/settings", json=invalid).status_code, 422)
+                self.assertEqual(client.put("/api/settings", json={"auto_submit_enabled": False,
+                    "scheduler_aml_token": ""}).status_code, 200)
+
+    def test_new_aml_session_uses_saved_url(self):
+        from task_assist.aml.factory import new_service
+        self.settings.save(dict(aml_base_url="https://aml.test/first"))
+        with patch("task_assist.api.container.settings_store", self.settings), \
+             patch("task_assist.aml.factory.BackendClient") as backend, \
+             patch("task_assist.aml.factory.authenticate"):
+            new_service("token")
+            self.assertEqual(backend.call_args.kwargs["base_url"], "https://aml.test/first")
+            self.settings.save(dict(aml_base_url="https://aml.test/next"))
+            new_service("token")
+            self.assertEqual(backend.call_args.kwargs["base_url"], "https://aml.test/next")
+
+    def test_trace_list_and_dashboard_exclude_legacy_http_noise(self):
+        from task_assist.infrastructure.trace_store import Trace, TraceStore
+        store = TraceStore(self.db)
+        conversation = Trace("conversation_turn", "alice")
+        conversation.link(conversation_id="c1")
+        conversation.record("model", "test", token_usage={"input_tokens": 10, "output_tokens": 5})
+        conversation.finish()
+        noise = Trace("GET /api/traces", "alice")
+        store.save(conversation)
+        store.save(noise)  # 模拟升级前保存的查询记录。
+        self.assertEqual([row["trace_id"] for row in store.list_recent("alice")], [conversation.id])
+        self.assertIsNone(store.get(noise.id, "alice"))
+        dashboard = store.dashboard("alice", conversation_id="c1")
+        self.assertEqual(dashboard["aggregates"]["count"], 1)
+        self.assertEqual(dashboard["aggregates"]["total_tokens"]["total"], 15)
 
     def test_conversation_and_material_transaction_contracts(self):
         store = StateStore(self.db)

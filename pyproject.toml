@@ -32,4 +32,4 @@ build-backend = "setuptools.build_meta"
 include = ["task_assist*", "learning*"]
 
 [tool.setuptools.package-data]
-task_assist = ["widget/*.html", "widget/*.css", "widget/*.js"]
+task_assist = ["widget/*.html", "widget/*.css", "widget/*.js", "widget/*-LICENSE.txt"]

@@ -28,8 +28,9 @@ POLICIES: dict[str, tuple[str, str, str]] = {
 
 
 def policy_for(process_type: str) -> dict:
-    level, reason, source = POLICIES.get(process_type, ("未知流程", "尚未核对表单与提交条件", ""))
-    return {"level": level, "reason": reason, "source": source,
+    # 路径和行号只供维护者追溯规则，不作为模型可引用的实时业务证据。
+    level, reason, _code_reference = POLICIES.get(process_type, ("未知流程", "尚未核对表单与提交条件", ""))
+    return {"level": level, "reason": reason,
             "one_click": False, "conditional_one_click": process_type == "risk"}
 
 

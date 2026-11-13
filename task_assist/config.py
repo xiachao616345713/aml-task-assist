@@ -15,6 +15,9 @@ MODEL_TURNS_PER_MINUTE = max(1, int(os.getenv("MODEL_TURNS_PER_MINUTE", "30")))
 MYSQL_DSN = os.getenv("MYSQL_DSN", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 TRACE_RETENTION_DAYS = max(1, int(os.getenv("TRACE_RETENTION_DAYS", "30")))
+# 心跳、探针与嵌入配置等高频无业务含义的请求不生成 Trace；/widget 静态资源始终排除。
+TRACE_EXCLUDED_PATHS = {x.strip() for x in os.getenv(
+    "TRACE_EXCLUDED_PATHS", "/health,/ready,/api/widget-config").split(",") if x.strip()}
 TRACE_MAX_PAYLOAD_CHARS = max(1000, min(50000, int(os.getenv("TRACE_MAX_PAYLOAD_CHARS", "12000"))))
 TRACE_MAX_EVENTS = max(100, min(10000, int(os.getenv("TRACE_MAX_EVENTS", "1000"))))
 AUTO_SUBMIT_ENABLED = os.getenv("AUTO_SUBMIT_ENABLED", "false").lower() in {"1", "true", "yes"}

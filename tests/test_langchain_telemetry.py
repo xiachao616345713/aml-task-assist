@@ -16,6 +16,25 @@ HAS_CALLBACK_DEPS = (
 
 @unittest.skipUnless(HAS_CALLBACK_DEPS, "缺少 LangChain 或 OpenTelemetry 依赖")
 class LangChainTelemetryTests(unittest.TestCase):
+    def test_model_inputs_keep_long_context_and_tool_call_identity(self):
+        from task_assist.infrastructure.telemetry import LangChainTraceHandler
+        trace = Trace("conversation_turn", "alice")
+        handler = LangChainTraceHandler(trace)
+        run_id = uuid.uuid4()
+        messages = [SimpleNamespace(type="system", content="系统要求" * 200),
+                    SimpleNamespace(type="ai", content="", tool_calls=[{"id": "call-1", "name": "lookup", "args": {"page": 1}}]),
+                    SimpleNamespace(type="tool", content="查询结果", tool_call_id="call-1", name="lookup")]
+        handler.on_chat_model_start({"name": "test"}, [messages], run_id=run_id)
+        response = SimpleNamespace(generations=[[SimpleNamespace(message=SimpleNamespace(content="回答"))]], llm_output={})
+        handler.on_llm_end(response, run_id=run_id)
+        handler.on_llm_end(response, run_id=run_id)  # 提供方重复完成回调不能重复累计。
+        event = trace.as_dict()["events"][0]
+        self.assertEqual(len(event["input_messages"][0]["content"]), 800)
+        self.assertEqual(event["input_messages"][1]["tool_calls"][0]["id"], "call-1")
+        self.assertEqual(event["input_messages"][2]["tool_call_id"], "call-1")
+        self.assertEqual(trace.as_dict()["model_calls"], 1)
+        self.assertFalse(event["reasoning_available"])
+
     def test_model_and_tool_callback_share_trace_and_redact_token(self):
         from task_assist.infrastructure.telemetry import LangChainTraceHandler
 
@@ -43,6 +62,38 @@ class LangChainTelemetryTests(unittest.TestCase):
         self.assertEqual(result["events"][1]["parent_run_id"], str(model_run))
         self.assertEqual(result["events"][1]["output"]["data"]["count"], 2)
         self.assertNotIn("private-token", str(result))
+
+    def test_streamed_reasoning_chunks_are_accumulated_and_input_messages_recorded(self):
+        from task_assist.infrastructure.telemetry import LangChainTraceHandler
+
+        trace = Trace("conversation", "alice")
+        handler = LangChainTraceHandler(trace)
+        model_run = uuid.uuid4()
+        system = SimpleNamespace(type="system", content="你是 AML 审核助手")
+        human = SimpleNamespace(type="human", content="我有多少待办？")
+        handler.on_chat_model_start({"name": "test-model"}, [[system, human]], run_id=model_run)
+        handler.on_llm_new_token("", run_id=model_run,
+                                 chunk=SimpleNamespace(additional_kwargs={"reasoning_content": "先查询待办总数，"}))
+        handler.on_llm_new_token("", run_id=model_run,
+                                 chunk=SimpleNamespace(additional_kwargs={"reasoning_content": "再按类型分组。"}))
+        message = SimpleNamespace(
+            content="共有 3 个待办",
+            usage_metadata={"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            response_metadata={},
+            additional_kwargs={},
+        )
+        response = SimpleNamespace(generations=[[SimpleNamespace(message=message)]], llm_output={})
+        handler.on_llm_end(response, run_id=model_run)
+
+        result = trace.as_dict()
+        model_event = result["events"][0]
+        self.assertEqual(model_event["reasoning"], "先查询待办总数，再按类型分组。")
+        self.assertEqual(model_event["input_messages"][0]["role"], "system")
+        self.assertIn("AML 审核助手", model_event["input_messages"][0]["content"])
+        self.assertEqual(model_event["input_messages"][1]["content"], "我有多少待办？")
+        # 没有提供方摘要时，顶层推理摘要回退为流式思考全文的结尾。
+        self.assertEqual(result["reasoning_summary"], "先查询待办总数，再按类型分组。")
+        self.assertEqual(result["model_calls"], 1)
 
 
 if __name__ == "__main__":

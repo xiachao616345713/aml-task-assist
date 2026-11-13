@@ -1,5 +1,5 @@
 """应用表的 SQLAlchemy 对象映射；既有数据库使用 SQL 迁移管理。"""
-from sqlalchemy import Column, String, Text, Float, BigInteger, LargeBinary, ForeignKey, JSON
+from sqlalchemy import Column, String, Text, Float, BigInteger, LargeBinary, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT, LONGBLOB
 
@@ -98,11 +98,25 @@ class TracesV2(Base):
     conversation_id = Column(String(32), nullable=True)
     workflow_id = Column(String(32), nullable=True)
     name = Column(String(255), nullable=False)
+    # 看板聚合用的可查询摘要列；与 data JSON 内的同名字段保持一致。
+    status = Column(String(16), nullable=True)
+    duration_ms = Column(Float, nullable=True)
+    input_tokens = Column(BigInteger, nullable=True)
+    output_tokens = Column(BigInteger, nullable=True)
+    total_tokens = Column(BigInteger, nullable=True)
+    model_calls = Column(BigInteger, nullable=True)
+    tool_calls = Column(BigInteger, nullable=True)
+    error_count = Column(BigInteger, nullable=True)
 
 class AppSettings(Base):
     __tablename__ = "app_settings"
     id = Column(String(32), primary_key=True)
     business_token = Column(Text, nullable=False, default="")
+    aml_base_url = Column(String(2048), nullable=True)
+    scheduler_aml_token = Column(Text, nullable=True)
+    auto_submit_enabled = Column(Boolean, nullable=True)
+    auto_submit_interval_seconds = Column(BigInteger, nullable=True)
+    max_auto_submit_per_run = Column(BigInteger, nullable=True)
     model_name = Column(String(255), nullable=False)
     model_base_url = Column(String(2048), nullable=False)
     model_api_key = Column(Text, nullable=False, default="")

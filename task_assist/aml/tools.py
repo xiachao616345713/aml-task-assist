@@ -12,7 +12,7 @@ from ..core.contracts import ToolProvider
 
 
 class AmlToolProvider(ToolProvider):
-    version = "aml-tools-2"
+    version = "aml-tools-3"
     system_prompt = (
         "你是反洗钱待办助手。延续同一会话已有上下文；事实与数量必须由工具实时查询。"
         "材料任务由服务端工作流创建，模型不能声称已经审批、上传或提交。"

@@ -15,6 +15,11 @@ from task_assist.infrastructure.models import (Conversations, Messages, ReviewWo
     MaterialTasks, Attachments, AttachmentContents, AuditEvents, as_dict)
 
 
+def conversation_title(question):
+    text = " ".join(question.split())
+    return text[:39] + "…" if len(text) > 40 else text
+
+
 class StateStore:
     def __init__(self, database: MySQLDatabase | None = None):
         self.database = database or MySQLDatabase()
@@ -48,16 +53,27 @@ class StateStore:
 
     def conversations(self, owner_id):
         with self._db() as db:
-            return [as_dict(x) for x in db.scalars(select(Conversations).where(
-                Conversations.owner_id == owner_id).order_by(Conversations.updated_at.desc()).limit(100))]
+            first_question = select(Messages.content).where(
+                Messages.conversation_id == Conversations.id, Messages.owner_id == owner_id,
+                Messages.role == "user").order_by(Messages.created_at, Messages.id).limit(1).scalar_subquery()
+            rows = db.execute(select(Conversations, first_question.label("first_question")).where(
+                Conversations.owner_id == owner_id).order_by(Conversations.updated_at.desc()).limit(100))
+            # 兼容历史默认标题，无需批量改写旧会话。
+            return [{**as_dict(item), "title": conversation_title(question)
+                     if item.title == "新对话" and question else item.title} for item, question in rows]
 
     def add_message(self, conversation_id, owner_id, role, content, trace_id):
         if role not in {"user", "assistant"}:
             raise ValueError("消息角色无效")
         now, ident = time.time(), uuid.uuid4().hex
         with self._db() as db:
-            conversation = self._owned(db, Conversations, conversation_id, owner_id)
+            conversation = self._owned(db, Conversations, conversation_id, owner_id, lock=True)
             conversation.updated_at = now
+            if role == "user" and conversation.title == "新对话" and content.strip():
+                first_question = db.scalar(select(Messages.content).where(
+                    Messages.conversation_id == conversation_id, Messages.owner_id == owner_id,
+                    Messages.role == "user").order_by(Messages.created_at, Messages.id).limit(1))
+                conversation.title = conversation_title(first_question or content)
             db.add(Messages(id=ident, conversation_id=conversation_id, owner_id=owner_id,
                             role=role, content=content, trace_id=trace_id, created_at=now))
         return dict(id=ident, role=role, content=content, trace_id=trace_id, created_at=now)

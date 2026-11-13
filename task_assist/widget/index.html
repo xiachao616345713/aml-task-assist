@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AML 任务助手</title>
-  <link rel="stylesheet" href="/widget/styles.css?v=20261111-settings2">
+  <link rel="stylesheet" href="/widget/styles.css?v=20261113-markdown1">
 </head>
 <body>
   <div id="app" class="app-shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">◆</span><span>AML 任务助手</span></div>
+    <aside id="sidebar" class="sidebar" aria-label="历史对话">
+      <div class="sidebar-heading"><div class="brand"><span class="brand-mark">◆</span><span>AML 任务助手</span></div><button id="collapseSidebar" class="sidebar-toggle" type="button" aria-label="收起历史对话">‹</button></div>
       <button id="newConversation" class="primary wide">＋ 新建对话</button>
       <div id="conversationCaption" class="section-caption">当前用户的历史对话</div>
       <div id="conversations" class="conversation-list"></div>
@@ -17,11 +17,26 @@
     </aside>
 
     <main class="chat-panel">
-      <header class="topbar"><div><h1>任务处理工作台</h1><p>整理资料、核对来源，预填审批资料</p></div><div class="topbar-actions"><button id="settingsButton" class="secondary" type="button">Token / 模型配置</button><button id="traceLink" class="text-button trace-pill" type="button">调用链</button></div></header>
+      <header class="topbar"><div class="workbench-heading"><button id="toggleSidebar" class="secondary" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="展开或收起历史对话">☰</button><div><h1>任务处理工作台</h1><p>整理资料、核对来源，预填审批资料</p></div></div><div class="topbar-actions"><button id="settingsButton" class="secondary" type="button">系统配置</button><button id="automationLink" class="secondary" type="button">定时扫描</button><button id="tasksButton" class="secondary" type="button" aria-haspopup="dialog" aria-controls="taskDrawer">我的待办 <span id="taskBadge" class="task-count">—</span></button><button id="traceLink" class="text-button trace-pill" type="button">调用链</button></div></header>
       <div id="notice" class="notice hidden" role="status"></div>
+      <section id="automationView" class="automation-view hidden" aria-label="定时扫描">
+        <div class="panel-heading"><h2>定时扫描</h2><button id="closeAutomation" type="button" class="text-button">返回对话</button></div>
+        <p id="automationStatus" role="status">正在读取扫描配置…</p>
+        <p>按调度专用账号权限扫描并提交符合条件的中低风险任务。关闭后停止后续扫描和提交，已发出的请求会完成。</p>
+        <form id="automationForm">
+          <fieldset id="automationFields" disabled>
+            <label><input id="autoSubmitEnabled" type="checkbox">启用定时扫描</label>
+            <label>扫描周期（秒）<input id="autoSubmitInterval" type="number" min="60" max="604800" required></label>
+            <label>每轮最多提交数<input id="maxAutoSubmitPerRun" type="number" min="1" max="100" required></label>
+            <p>AML 地址和调度专用 Token 可在「系统配置」中设置。</p>
+            <button id="saveAutomation" type="submit" class="primary">保存扫描配置</button>
+          </fieldset>
+        </form>
+        <button id="retryAutomation" class="text-button" type="button">刷新配置</button>
+      </section>
       <div id="chatView" class="chat-view">
         <div id="messages" class="messages" aria-live="polite">
-          <div class="empty-state"><div class="empty-icon">✦</div><h2>开始处理今天的任务</h2><p>可以问“我有多少待办？”或在右侧选择一个任务。</p></div>
+          <div class="empty-state"><div class="empty-icon">✦</div><h2>开始处理今天的任务</h2><p>可以问“我有多少待办？”或点击上方「我的待办」选择任务。</p></div>
         </div>
         <form id="chatForm" class="composer">
           <label for="question" class="sr-only">发送消息</label>
@@ -30,24 +45,59 @@
         </form>
       </div>
       <section id="traceView" class="trace-view hidden" aria-label="调用链查询">
-        <div class="trace-toolbar"><h2>调用链</h2><form id="traceSearchForm"><input id="traceQuery" aria-label="Trace ID" placeholder="输入完整 Trace ID 或筛选最近记录"><button type="submit" class="secondary">查询</button></form></div>
-        <div class="trace-layout"><div id="traceList" class="trace-list"></div><div id="traceDetail" class="trace-detail"><p class="muted">选择一条调用链查看模型、工具和决策记录</p></div></div>
+        <div class="trace-toolbar">
+          <div class="trace-tabs" role="tablist" aria-label="可观测视图">
+            <button id="tabTraces" class="tab active" role="tab" type="button" aria-selected="true">调用链</button>
+            <button id="tabDashboard" class="tab" role="tab" type="button" aria-selected="false">看板</button>
+          </div>
+          <form id="traceSearchForm"><input id="traceQuery" aria-label="Trace ID" placeholder="输入完整 Trace ID 或筛选最近记录"><button type="submit" class="secondary">查询</button></form>
+        </div>
+        <div id="tracePane" class="trace-layout"><div id="traceList" class="trace-list"></div><div id="traceDetail" class="trace-detail"><p class="muted">选择一条调用链查看模型、工具和决策记录</p></div></div>
+        <div id="dashboardPane" class="dashboard hidden" role="tabpanel" aria-label="链路质量看板">
+          <div class="dash-filters">
+            <label>会话范围<select id="dashScope"><option value="conversation" selected>当前会话（未选择时查看全部）</option><option value="all">我的全部对话</option></select></label>
+            <label>时间范围<select id="dashRange">
+              <option value="3600">最近 1 小时</option>
+              <option value="86400" selected>最近 24 小时</option>
+              <option value="604800">最近 7 天</option>
+              <option value="2592000">最近 30 天</option>
+              <option value="0">全部</option>
+            </select></label>
+            <label>状态<select id="dashStatus">
+              <option value="" selected>全部</option>
+              <option value="ok">成功</option>
+              <option value="degraded">降级</option>
+              <option value="error">失败</option>
+            </select></label>
+            <label>链路名称<input id="dashName" placeholder="如 conversation_turn" maxlength="100"></label>
+            <button id="dashRefresh" class="secondary" type="button">刷新</button>
+          </div>
+          <div id="dashTiles" class="dash-tiles"></div>
+          <div id="dashTable" class="dash-table"><p class="muted">选择筛选条件后点击刷新</p></div>
+          <div id="dashDetail" class="dashboard-detail" aria-live="polite"></div>
+        </div>
       </section>
     </main>
 
-    <aside class="task-panel">
-      <div class="panel-heading"><h2>我的待办</h2><button id="refreshTasks" class="text-button">刷新</button></div>
-      <div class="summary-card"><div class="summary-label">待处理总数</div><div id="taskTotal" class="summary-number">—</div><div id="taskTypes" class="summary-subtitle">登录后加载</div></div>
-      <div class="section-caption">风险待办</div>
-      <div id="riskTasks" class="task-list"></div>
-      <div class="section-caption">受益所有人核验</div>
-      <div id="bnfTasks" class="task-list"></div>
-      <div class="section-caption">补充材料</div>
-      <div id="materialTasks" class="task-list"></div>
-      <div class="section-caption">审核流程</div>
-      <div id="workflows" class="task-list"></div>
-    </aside>
   </div>
+
+    <dialog id="taskDrawer" class="task-panel task-drawer" aria-labelledby="taskDrawerTitle">
+      <div class="task-drawer-heading"><h2 id="taskDrawerTitle">我的待办</h2><div><button id="refreshTasks" class="text-button" type="button">刷新</button><button id="expandTasks" class="text-button" type="button" aria-pressed="false">加宽抽屉</button><button id="closeTasks" class="icon-button" type="button" aria-label="关闭任务抽屉">×</button></div></div>
+      <div class="task-drawer-body">
+      <div class="summary-card"><div class="summary-label">待处理总数</div><div id="taskTotal" class="summary-number">—</div><div id="taskTypes" class="summary-subtitle">登录后加载</div></div>
+      <div id="taskTypeList" class="task-type-list"></div>
+      <details id="riskGroup" class="task-group"><summary>风险待办 <span id="riskCount" class="task-count">—</span></summary>
+      <div id="riskTasks" class="task-list"></div>
+      <button id="riskMore" class="text-button hidden" type="button">加载更多</button></details>
+      <details id="bnfGroup" class="task-group"><summary>受益所有人核验 <span id="bnfCount" class="task-count">—</span></summary>
+      <div id="bnfTasks" class="task-list"></div>
+      <button id="bnfMore" class="text-button hidden" type="button">加载更多</button></details>
+      <details class="task-group"><summary>补充材料 <span id="materialCount" class="task-count">—</span></summary>
+      <div id="materialTasks" class="task-list"></div>
+      </details><details class="task-group"><summary>审核流程 <span id="workflowCount" class="task-count">—</span></summary>
+      <div id="workflows" class="task-list"></div>
+      </details></div>
+    </dialog>
 
   <dialog id="materialDialog" class="dialog">
     <form method="dialog" class="dialog-inner">
@@ -80,19 +130,35 @@
   </dialog>
   <dialog id="settingsDialog" class="dialog">
     <form id="settingsForm" class="dialog-inner">
-      <div class="dialog-title"><h2>Token 与模型配置</h2><button type="button" id="closeSettings" class="icon-button" aria-label="关闭配置">×</button></div>
+      <div class="dialog-title"><h2>系统配置</h2><button type="button" id="closeSettings" class="icon-button" aria-label="关闭配置">×</button></div>
       <p>配置保存在数据库中，保存后生效。已保存的凭证留空保持原值。</p>
+      <p id="settingsStatus" role="status"></p>
+      <fieldset id="settingsFields" disabled>
+      <fieldset><legend>AML 业务连接</legend>
+      <label>AML 服务地址（AML_BASE_URL）<input id="amlBaseUrl" type="url" maxlength="2048" placeholder="https://example.com/aml"></label>
       <label>业务系统 Token<input id="businessToken" type="password" autocomplete="off" maxlength="4096"></label>
       <label><input id="clearBusinessToken" type="checkbox">清除业务 Token</label>
-      <label>模型名称<input id="modelName" required maxlength="255"></label>
-      <label>模型 API 地址<input id="modelBaseUrl" type="url" required placeholder="https://example.com/v1"></label>
+      </fieldset>
+      <fieldset><legend>调度账号</legend>
+      <label>调度专用 Token（SCHEDULER_AML_TOKEN）<input id="schedulerAmlToken" type="password" autocomplete="off" maxlength="4096"></label>
+      <label><input id="clearSchedulerAmlToken" type="checkbox">清除调度专用 Token</label>
+      <p>周期和开关请在「定时扫描」页设置。</p>
+      </fieldset>
+      <fieldset><legend>模型配置</legend>
+      <label>模型名称<input id="modelName" maxlength="255"></label>
+      <label>模型 API 地址<input id="modelBaseUrl" type="url" placeholder="https://example.com/v1"></label>
       <label>模型 API Key<input id="modelApiKey" type="password" autocomplete="off" maxlength="4096"></label>
       <label><input id="clearModelApiKey" type="checkbox">清除模型 API Key</label>
       <label>超时（秒）<input id="modelTimeout" type="number" min="5" max="600" required></label>
       <label>最大输出 Token<input id="modelMaxTokens" type="number" min="100" max="1000000" required></label>
+      </fieldset>
       <div class="dialog-actions"><button id="saveSettings" type="submit" class="primary">保存配置</button></div>
+      </fieldset>
+      <button id="retrySettings" class="text-button" type="button">重新读取配置</button>
     </form>
   </dialog>
-  <script src="/widget/app.js?v=20261111-settings2" defer></script>
+  <script src="/widget/marked.js?v=18.2.0" defer></script>
+  <script src="/widget/purify.js?v=3.4.17" defer></script>
+  <script src="/widget/app.js?v=20261113-markdown1" defer></script>
 </body>
 </html>

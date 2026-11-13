@@ -16,7 +16,7 @@ class BackendError(RuntimeError):
 
 class BackendClient:
     def __init__(self, token: str, transport: httpx.BaseTransport | None = None,
-                 trace_id: str | None = None, trace=None):
+                 trace_id: str | None = None, trace=None, base_url: str | None = None):
         if not token:
             raise BackendError("缺少 X-Access-Token")
         self.token = token
@@ -25,7 +25,7 @@ class BackendClient:
         if trace_id:
             headers["X-Trace-Id"] = trace_id
         self.client = httpx.Client(
-            base_url=config.AML_BASE_URL + "/",
+            base_url=(config.AML_BASE_URL if base_url is None else base_url).rstrip("/") + "/",
             headers=headers,
             timeout=15,
             transport=transport,
