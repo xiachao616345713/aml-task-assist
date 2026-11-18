@@ -46,9 +46,9 @@ class TaskService:
     def summary(self, trace: Trace) -> dict:
         return summarize(_call(trace, "home/indexProcessInfo", self.backend.summary))
 
-    def risk_page(self, trace: Trace, page: int = 1, page_size: int = 20) -> dict:
+    def risk_page(self, trace: Trace, page: int = 1, page_size: int = 20, filters: dict | None = None) -> dict:
         self.actor.require("riskList:audit")
-        data = _call(trace, "home/riskList", self.backend.risk_page, page, page_size)
+        data = _call(trace, "home/riskList", self.backend.risk_page, page, page_size, **({"filters": filters} if filters else {}))
         levels = _call(trace, "riskLevel/list", self.backend.risk_levels)
         records = []
         for row in data["records"]:
@@ -85,6 +85,9 @@ class TaskService:
             raise TaskRejected("当前用户待办中未找到该风险任务")
         return found
 
+    def verify_risk_task(self, trace: Trace, task_id: str, act_id: str) -> None:
+        self._find_risk(trace, task_id, act_id)
+
     def risk_evidence(self, trace: Trace, task_id: str, act_id: str) -> dict:
         """只返回可用于理由草稿的非身份字段，不让模型看到客户身份资料。"""
         found = self._find_risk(trace, task_id, act_id)
@@ -119,10 +122,10 @@ class TaskService:
                 break
         raise TaskRejected("当前用户待办中未找到该受益所有人核验任务")
 
-    def bnf_page(self, trace: Trace, page: int = 1, page_size: int = 20) -> dict:
+    def bnf_page(self, trace: Trace, page: int = 1, page_size: int = 20, filters: dict | None = None) -> dict:
         """只暴露创建补材料工作流所需的 BNF 待办字段。"""
         self.actor.require("beneficiary:audit:handleProcess")
-        data = _call(trace, "bnfReport/queryProcessPage", self.backend.bnf_page, page, page_size)
+        data = _call(trace, "bnfReport/queryProcessPage", self.backend.bnf_page, page, page_size, **({"filters": filters} if filters else {}))
         return {
             "page": page, "page_size": page_size, "total": data.get("total", 0),
             "records": [

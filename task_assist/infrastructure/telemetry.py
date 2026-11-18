@@ -68,8 +68,9 @@ def _message_digest(messages) -> list[dict]:
 
 
 class LangChainTraceHandler(BaseCallbackHandler):
-    def __init__(self, trace: Trace):
+    def __init__(self, trace: Trace, scope: dict | None = None):
         self.trace = trace
+        self.scope = scope or {}
         self.started: dict[str, tuple[str, str, float, dict]] = {}
         self.spans = {}
         self._reasoning: dict[str, list[str]] = {}
@@ -84,7 +85,7 @@ class LangChainTraceHandler(BaseCallbackHandler):
         ident = str(run_id)
         if ident in self.started:
             return
-        self.started[ident] = (kind, name, time.monotonic(), {"run_id": ident, **fields})
+        self.started[ident] = (kind, name, time.monotonic(), {"run_id": ident, **self.scope, **fields})
         span = otel_trace.get_tracer("aml-task-assist").start_span(f"{kind}.{name}")
         span.set_attribute("aml.trace_id", self.trace.id)
         self.spans[ident] = span

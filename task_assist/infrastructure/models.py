@@ -1,5 +1,5 @@
 """应用表的 SQLAlchemy 对象映射；既有数据库使用 SQL 迁移管理。"""
-from sqlalchemy import Column, String, Text, Float, BigInteger, LargeBinary, ForeignKey, JSON, Boolean
+from sqlalchemy import Column, String, Text, Float, BigInteger, LargeBinary, ForeignKey, JSON, Boolean, Index
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT, LONGBLOB
 
@@ -125,3 +125,56 @@ class AppSettings(Base):
 
 def as_dict(obj):
     return {column.name: getattr(obj, column.name) for column in obj.__table__.columns}
+
+
+class MaterialBatches(Base):
+    __tablename__ = "material_batches"
+    id = Column(String(32), primary_key=True)
+    owner_id = Column(String(128), nullable=False)
+    conversation_id = Column(String(32), ForeignKey("conversations.id"), nullable=False)
+    process_type = Column(String(100), nullable=False)
+    status = Column(String(32), nullable=False)
+    created_at = Column(Float, nullable=False)
+    updated_at = Column(Float, nullable=False)
+
+
+class BatchSources(Base):
+    __tablename__ = "batch_sources"
+    id = Column(String(32), primary_key=True)
+    batch_id = Column(String(32), ForeignKey("material_batches.id"), nullable=False)
+    owner_id = Column(String(128), nullable=False)
+    parent_id = Column(String(32), nullable=True)
+    filename = Column(String(500), nullable=False)
+    content_type = Column(String(160), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+    content = Column(LargeBinary().with_variant(LONGBLOB(), "mysql"), nullable=False)
+    text_content = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False)
+    extraction = Column(JSON, nullable=True)
+    error = Column(String(500), nullable=True)
+    backend_path = Column(String(1024), nullable=True)
+    created_at = Column(Float, nullable=False)
+
+
+class BatchSubmissions(Base):
+    __tablename__ = "batch_submissions"
+    id = Column(String(32), primary_key=True)
+    batch_id = Column(String(32), ForeignKey("material_batches.id"), nullable=False)
+    owner_id = Column(String(128), nullable=False)
+    process_type = Column(String(100), nullable=False)
+    task_id = Column(String(255), nullable=True)
+    act_id = Column(String(255), nullable=True)
+    status = Column(String(32), nullable=False)
+    data = Column(JSON, nullable=False)
+    created_at = Column(Float, nullable=False)
+    updated_at = Column(Float, nullable=False)
+
+
+class BatchTraceLinks(Base):
+    __tablename__ = "batch_trace_links"
+    __table_args__ = (Index("idx_batch_trace_owner", "batch_id", "owner_id", "created_at"),)
+    trace_id = Column(String(32), primary_key=True)
+    batch_id = Column(String(32), ForeignKey("material_batches.id"), nullable=False)
+    owner_id = Column(String(128), nullable=False)
+    phase = Column(String(32), nullable=False)
+    created_at = Column(Float, nullable=False)

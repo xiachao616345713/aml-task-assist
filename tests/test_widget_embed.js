@@ -15,7 +15,8 @@ const vm = require('node:vm');
   };
   vm.runInNewContext(fs.readFileSync('task_assist/widget/embed.js', 'utf8'), context);
   const widget = context.window.AmlTaskAgent.mount({ appendChild() {} }, {
-    token: () => Promise.resolve('current-token'), sourceId: 'saved-proof', onPrefill: () => prefills++
+    token: () => Promise.resolve('current-token'), sourceId: 'saved-proof',
+    taskContext: {process_type:'risk', task_id:'task-1', act_id:'act-1'}, onPrefill: () => prefills++
   });
   const ready = { type: 'aml-agent-ready', nonce: 'nonce-1' };
   listener({ origin: 'https://attacker.test', source: child, data: ready });
@@ -26,6 +27,10 @@ const vm = require('node:vm');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(sent.find(s => s.message.type === 'aml-agent-token').message.token, 'current-token');
   assert.equal(sent.find(s => s.message.type === 'aml-agent-open-source').message.sourceId, 'saved-proof');
+  assert.equal(sent.find(s => s.message.type === 'aml-agent-open-task').message.task.task_id, 'task-1');
+  widget.openTask({process_type:'bnfValidate', task_id:'task-2', act_id:'report-2'});
+  assert.equal(sent.at(-1).message.task.act_id, 'report-2');
+  assert.equal(sent.at(-1).message.nonce, 'nonce-1');
   widget.openSource('other-proof');
   const open = sent.at(-1);
   assert.equal(open.message.sourceId, 'other-proof');

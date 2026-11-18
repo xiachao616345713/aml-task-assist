@@ -12,10 +12,11 @@ from ..core.contracts import ToolProvider
 
 
 class AmlToolProvider(ToolProvider):
-    version = "aml-tools-3"
+    version = "aml-tools-4"
     system_prompt = (
         "你是反洗钱待办助手。延续同一会话已有上下文；事实与数量必须由工具实时查询。"
-        "材料任务由服务端工作流创建，模型不能声称已经审批、上传或提交。"
+        "用户按任务类型批量上传资料，由批次处理服务匹配和提交；聊天模型不能自行审批、上传或提交。"
+        "用户询问资料批次或具体提交内容时必须查询get_material_batches，不从聊天记忆推断。"
         "高风险与受益所有人核验必须提示人工办理。"
         "不要求、输出或复述访问令牌、客户证件号和附件内容。"
         "工具返回 ok=false 时应说明数据暂不可用，不得猜测数量或审核结论。"
@@ -62,5 +63,18 @@ class AmlToolProvider(ToolProvider):
             return json.dumps(executor.run("get_process_policy", {"process_type": process_type},
                                            lambda: service.policy(process_type)), ensure_ascii=False)
 
-        return [get_pending_summary, get_risk_tasks, get_risk_evidence,
+        @tool
+        def get_material_batches(batch_id: str = "", current_conversation: bool = True) -> str:
+            """查询本人资料批次；默认查看本次对话；指定batch_id返回实际payload、目标记录、结果及原文来源。"""
+            def read():
+                from task_assist.infrastructure.batch_store import BatchStore
+                batches = BatchStore(store.database)
+                if batch_id:
+                    batch = batches.get(batch_id, context.owner_id)
+                    service.actor.require({"risk":"riskList:audit", "bnfValidate":"beneficiary:audit:handleProcess"}[batch["process_type"]])
+                    return {"batch":batch,"records":batches.items(batch_id,context.owner_id)}
+                return {"records":batches.list(context.owner_id, getattr(trace, "conversation_id", None) if current_conversation else None)}
+            return json.dumps(executor.run("get_material_batches", {"batch_id":batch_id, "current_conversation":current_conversation}, read),ensure_ascii=False)
+
+        return [get_material_batches, get_pending_summary, get_risk_tasks, get_risk_evidence,
                 get_material_tasks, get_process_policy]

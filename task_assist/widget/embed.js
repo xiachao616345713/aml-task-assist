@@ -16,6 +16,14 @@
       container.appendChild(frame);
       var currentNonce = "";
       var pendingSource = options.sourceId || "";
+      var pendingTask = options.taskContext || null;
+      function openTask(task) {
+        pendingTask = task;
+        if (currentNonce && task) {
+          frame.contentWindow.postMessage({type: "aml-agent-open-task", nonce: currentNonce, task: task}, base.origin);
+          pendingTask = null;
+        }
+      }
       function openSource(sourceId) {
         pendingSource = sourceId;
         if (currentNonce) {
@@ -35,6 +43,7 @@
           currentNonce = event.data.nonce;
           sendToken(currentNonce);
           if (pendingSource) openSource(pendingSource);
+          if (pendingTask) openTask(pendingTask);
         }
         if (event.data && event.data.type === "aml-agent-prefill" && typeof options.onPrefill === "function") {
           options.onPrefill(event.data.prefill);
@@ -44,7 +53,7 @@
         }
       }
       window.addEventListener("message", onMessage);
-      return { element: frame, openSource: openSource, refreshToken: function () { frame.contentWindow.postMessage({ type: "aml-agent-refresh" }, base.origin); },
+      return { element: frame, openSource: openSource, openTask: openTask, refreshToken: function () { frame.contentWindow.postMessage({ type: "aml-agent-refresh" }, base.origin); },
         destroy: function () { window.removeEventListener("message", onMessage); frame.remove(); } };
     }
   };

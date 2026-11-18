@@ -12,7 +12,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import case, delete, func, select, or_
 from sqlalchemy.dialects.mysql import insert as mysql_insert
-from task_assist.infrastructure.models import TracesV2
+from task_assist.infrastructure.models import TracesV2, BatchTraceLinks
 
 from task_assist import config
 from task_assist.core.trace_payload import safe_payload
@@ -73,6 +73,31 @@ class TraceStore:
             rows = db.scalars(select(TracesV2.data).where(TracesV2.owner_id == owner_id, TracesV2.name == name)
                               .order_by(TracesV2.created_at.desc()).limit(max(limit, 1)))
             return [json.loads(row) for row in rows]
+
+    def batch_history(self, batch_id, owner_id):
+        with self.database.orm_session() as db:
+            rows=db.execute(select(BatchTraceLinks,TracesV2).outerjoin(TracesV2,
+                (TracesV2.id==BatchTraceLinks.trace_id) & (TracesV2.owner_id==owner_id)).where(
+                BatchTraceLinks.batch_id==batch_id,BatchTraceLinks.owner_id==owner_id).order_by(BatchTraceLinks.created_at))
+            records=[]
+            for link,row in rows:
+                if row is None:
+                    records.append(dict(trace_id=link.trace_id,phase=link.phase,created_at=link.created_at,available=False))
+                else:
+                    payload=json.loads(row.data)
+                    records.append({**_row_summary(row),'phase':link.phase,'available':True,
+                        'usage_complete':payload.get('usage_complete',not row.model_calls),
+                        'models_without_usage':payload.get('models_without_usage',0),
+                        'model_duration_ms':payload.get('model_duration_ms',0)})
+        available=[r for r in records if r['available']]
+        tokens={k:sum(r['total_tokens'][k] for r in available) if available else None for k in ('input','output','total')}
+        return dict(records=records,aggregates=dict(requests=len(records),available=len(available),
+            pending_or_expired=len(records)-len(available),total_tokens=tokens,
+            usage_complete=bool(records) and len(available)==len(records) and all(r['usage_complete'] for r in available),
+            model_calls=sum(r.get('model_calls') or 0 for r in available),
+            tool_calls=sum(r.get('tool_calls') or 0 for r in available),
+            request_duration_ms=sum(r.get('duration_ms') or 0 for r in available),
+            model_duration_ms=sum(r.get('model_duration_ms') or 0 for r in available)))
 
     def dashboard(self, owner_id, *, since=None, until=None, status=None, name=None,
                   conversation_id=None, workflow_id=None, limit=50):
@@ -136,7 +161,7 @@ class TraceStore:
 
 
 def _conversation_filter():
-    return or_(TracesV2.name.in_(["conversation_turn", "conversation", "POST /api/assistant/query"]),
+    return or_(TracesV2.name.in_(["conversation_turn", "conversation", "POST /api/assistant/query", "material_batch_create", "material_batch_upload", "material_batch_process"]),
                TracesV2.name.like("POST /api/conversations/%/messages"),
                TracesV2.name.like("POST /api/conversations/%/messages/stream"))
 
@@ -167,6 +192,8 @@ class Trace:
         self.created_at = time.time()
         self.conversation_id: str | None = None
         self.workflow_id: str | None = None
+        self.batch_id: str | None = None
+        self._missing_usage = 0
         self.events: list[dict] = []
         self.dropped_events = 0
         self._next_seq = 1
@@ -188,12 +215,14 @@ class Trace:
         if secret:
             self._secrets.add(secret)
 
-    def link(self, *, conversation_id: str | None = None, workflow_id: str | None = None) -> None:
+    def link(self, *, conversation_id: str | None = None, workflow_id: str | None = None, batch_id: str | None = None) -> None:
         """跨多轮请求用关联键聚合；单次调用仍保留唯一 trace_id。"""
         if conversation_id:
             self.conversation_id = conversation_id
         if workflow_id:
             self.workflow_id = workflow_id
+        if batch_id:
+            self.batch_id = batch_id
 
     def record(self, kind: str, name: str, status: str = "ok", **fields) -> None:
         with self._lock:
@@ -214,6 +243,8 @@ class Trace:
                 self._decision_summary = event["summary"]
             if kind == "model":
                 self._model_calls += 1
+                if not fields.get("usage_available", bool(fields.get("token_usage"))):
+                    self._missing_usage += 1
                 self._model_duration_ms += float(event.get("duration_ms") or 0)
                 if status == "error":
                     self._api_failed = True
@@ -267,7 +298,8 @@ class Trace:
         output_tokens = self._output_tokens_total
         return {
             "trace_id": self.id, "name": self.name, "created_at": self.created_at,
-            "conversation_id": self.conversation_id, "workflow_id": self.workflow_id,
+            "conversation_id": self.conversation_id, "workflow_id": self.workflow_id, "batch_id": self.batch_id,
+            "usage_complete": self._missing_usage == 0, "models_without_usage": self._missing_usage,
             "status": "error" if self._api_failed else ("degraded" if self._had_error else "ok"),
             "total_tokens": {"input": input_tokens, "output": output_tokens,
                              "total": input_tokens + output_tokens},

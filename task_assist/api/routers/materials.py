@@ -4,12 +4,10 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from langchain_openai import ChatOpenAI
 
-from task_assist import config
 from task_assist.aml.access import require_material_permission
 from task_assist.aml.service import TaskService
-from task_assist.api.container import database, rate_limiter, state_store
+from task_assist.api.container import database, rate_limiter, state_store, settings_store
 from task_assist.api.deps import get_service, run_traced
 from task_assist.features.materials.extraction import make_prefill
 
@@ -17,9 +15,7 @@ router = APIRouter()
 
 
 def model_factory():
-    return ChatOpenAI(model=config.MODEL_NAME, base_url=config.MODEL_BASE_URL,
-                      temperature=0, timeout=config.MODEL_TIMEOUT_SECONDS,
-                      max_tokens=config.MODEL_MAX_OUTPUT_TOKENS, max_retries=0)
+    return settings_store.model()
 
 
 def authorized_source(service, source_id):

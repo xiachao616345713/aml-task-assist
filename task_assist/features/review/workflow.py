@@ -22,6 +22,7 @@ class ReviewState(TypedDict, total=False):
     material_task_id: str | None
     after_material: str | None
     status: str
+    purpose: str
 
 
 class ReviewWorkflow:
@@ -77,9 +78,11 @@ class ReviewWorkflow:
             task = store.material_task(state["material_task_id"], state["owner_id"])
             if task["status"] != "submitted" or not task["attachments"]:
                 raise StateConflict("材料尚未提交")
-            adapters.get(state["process_type"]).validate_material(
-                context, state["task_id"], state["act_id"],
-            )
+            adapter = adapters.get(state["process_type"])
+            if state.get("purpose") == "prefill":
+                adapter.prepare_prefill(context, state["task_id"], state["act_id"])
+            else:
+                adapter.validate_material(context, state["task_id"], state["act_id"])
             return {"status": "material_received"}
 
         def next_after_material(state: ReviewState) -> str:
@@ -145,10 +148,13 @@ class ReviewWorkflow:
             return {"workflow": updated, "interrupt": status in {"waiting_material", "awaiting_human"}}
 
     def start(self, context: AgentContext, process_type: str, task_id: str, act_id: str,
-              conversation_id: str | None = None) -> dict:
+              conversation_id: str | None = None, *, purpose: str = "review") -> dict:
         adapter = self.adapters.get(process_type)
         adapter.authorize(context)
-        plan = adapter.prepare(context, task_id, act_id)
+        if purpose not in {"review", "prefill"}:
+            raise StateConflict("工作流用途无效")
+        plan = (adapter.prepare_prefill(context, task_id, act_id) if purpose == "prefill"
+                else adapter.prepare(context, task_id, act_id))
         context.trace.record("decision", "workflow_plan",
                              summary=("需要补充材料并进入 " + str(plan.after_material))
                              if plan.required_materials else "符合自动办理条件",
@@ -163,18 +169,22 @@ class ReviewWorkflow:
             "workflow_id": workflow["id"], "owner_id": context.owner_id,
             "process_type": process_type, "task_id": task_id, "act_id": act_id,
             "material_task_id": workflow["material_task_id"],
-            "after_material": plan.after_material, "status": "inspecting",
+            "after_material": plan.after_material, "status": "inspecting", "purpose": purpose,
         }
         try:
             with self._lock_for(workflow["id"]):
                 workflow = self.store.workflow(workflow["id"], context.owner_id)
                 if workflow["status"] != "inspecting":
+                    saved = self._graph(context).get_state(self._config(context.owner_id, workflow["id"]))
+                    if saved.values.get("purpose", "review") != purpose:
+                        raise StateConflict("该任务已有其他用途的流程，请在审核流程中继续办理")
                     return {"workflow": workflow,
                             "interrupt": workflow["status"] in {"waiting_material", "awaiting_human"}}
                 return self._invoke(context, workflow, state)
         except Exception:
             status = "uncertain" if self.ledger.status(task_id) in {"uncertain", "submitting"} else "blocked"
-            self.store.set_workflow_status(workflow["id"], context.owner_id, status, context.trace.id)
+            if workflow["status"] == "inspecting":
+                self.store.set_workflow_status(workflow["id"], context.owner_id, status, context.trace.id)
             self.store.audit(context.owner_id, "review_start", workflow["id"], status, context.trace.id)
             raise
 

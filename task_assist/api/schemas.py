@@ -1,5 +1,7 @@
 """外部 HTTP 契约，与工作流内部状态分开。"""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -15,6 +17,7 @@ class RiskApproval(BaseModel):
 
 class ReviewStart(BaseModel):
     process_type: str
+    purpose: Literal["review", "prefill"] = "review"
     task_id: str = Field(min_length=1, max_length=128)
     act_id: str = Field(min_length=1, max_length=128)
     conversation_id: str | None = None

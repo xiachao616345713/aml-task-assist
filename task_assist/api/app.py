@@ -14,7 +14,7 @@ from task_assist.aml.factory import new_service
 from task_assist.aml.review_adapters import BnfReviewAdapter, RiskReviewAdapter
 from task_assist.aml.tools import AmlToolProvider
 from task_assist.api.container import database, ledger, rate_limiter, state_store, trace_store, settings_store
-from task_assist.api.routers import conversations, system, tasks, workflows, materials, settings
+from task_assist.api.routers import conversations, system, tasks, workflows, materials, settings, batches
 from task_assist.features.review.contracts import AdapterRegistry
 from task_assist.core.conversation import ConversationAgent
 from task_assist.core.runtime_config import AgentRuntimeConfig
@@ -23,7 +23,7 @@ from task_assist.infrastructure.observability import configure_observability
 from task_assist.infrastructure.checkpoint import pooled_mysql_saver
 from task_assist.infrastructure.telemetry import LangChainTraceHandler, Trace
 from task_assist.infrastructure.trace_store import NullTrace
-from task_assist.api.trace_scope import is_conversation_turn
+from task_assist.api.trace_scope import trace_operation
 
 
 @asynccontextmanager
@@ -75,13 +75,14 @@ app = FastAPI(title="AML Task Agent", version="0.6.0", lifespan=lifespan)
 async def request_trace(request: Request, call_next):
     path = request.url.path
     is_widget = path.startswith("/widget")
-    if not is_conversation_turn(request.method, path):
+    operation = trace_operation(request.method, path)
+    if not operation:
         request.state.trace = NullTrace()
         response = await call_next(request)
         if is_widget:
             _widget_headers(response)
         return response
-    trace = Trace("conversation_turn")
+    trace = Trace(operation)
     request.state.trace = trace
     response = None
     deferred = False
@@ -147,7 +148,7 @@ def _widget_headers(response) -> None:
     response.headers["Content-Security-Policy"] = f"frame-ancestors {origins}"
 
 
-for router in (system.router, tasks.router, conversations.router, workflows.router, materials.router, settings.router):
+for router in (system.router, tasks.router, conversations.router, workflows.router, materials.router, settings.router, batches.router):
     app.include_router(router)
 
 widget_dir = Path(__file__).parent.parent / "widget"

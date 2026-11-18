@@ -17,10 +17,12 @@ class ObservableChatOpenAI(ChatOpenAI):
 
     def _create_chat_result(self, response, generation_info=None):
         result = super()._create_chat_result(response, generation_info)
-        body = response if isinstance(response, dict) else response.model_dump()
-        for generation, choice in zip(result.generations, body.get("choices") or []):
-            message = choice.get("message") or {}
+        # 结构化输出的parsed对象不需要重新序列化；这里只读取提供方的原始推理字段。
+        choices = response.get("choices", []) if isinstance(response, dict) else response.choices
+        for generation, choice in zip(result.generations, choices):
+            message = choice.get("message") or {} if isinstance(choice, dict) else choice.message
             for key in REASONING_FIELDS:
-                if message.get(key) is not None:
-                    generation.message.additional_kwargs[key] = message[key]
+                value = message.get(key) if isinstance(message, dict) else getattr(message, key, None)
+                if value is not None:
+                    generation.message.additional_kwargs[key] = value
         return result

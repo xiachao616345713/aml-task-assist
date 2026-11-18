@@ -8,6 +8,7 @@ from task_assist.aml.service import TaskService
 from task_assist.api.container import ledger, state_store, trace_store, settings_store
 from task_assist.api.deps import get_service, run_traced
 from task_assist.api.schemas import RiskApproval
+from task_assist.aml.filters import RiskFilters, BnfFilters
 
 router = APIRouter()
 
@@ -18,18 +19,24 @@ def summary(request: Request, service: TaskService = Depends(get_service)):
 
 @router.get("/api/tasks/risk")
 def risk_tasks(request: Request, page: int = 1, page_size: int = 20,
-               service: TaskService = Depends(get_service)):
+               filters: RiskFilters = Depends(), service: TaskService = Depends(get_service)):
     if not 1 <= page <= 10000 or not 1 <= page_size <= 100:
         raise HTTPException(status_code=422, detail="分页参数无效")
-    return run_traced(request, "risk_tasks", lambda trace: service.risk_page(trace, page, page_size))
+    return run_traced(request, "risk_tasks", lambda trace: service.risk_page(trace, page, page_size, filters.params()))
 
 
 @router.get("/api/tasks/bnf")
 def bnf_tasks(request: Request, page: int = 1, page_size: int = 20,
-              service: TaskService = Depends(get_service)):
+              filters: BnfFilters = Depends(), service: TaskService = Depends(get_service)):
     if not 1 <= page <= 10000 or not 1 <= page_size <= 100:
         raise HTTPException(status_code=422, detail="分页参数无效")
-    return run_traced(request, "bnf_tasks", lambda trace: service.bnf_page(trace, page, page_size))
+    return run_traced(request, "bnf_tasks", lambda trace: service.bnf_page(trace, page, page_size, filters.params()))
+
+
+@router.get("/api/tasks/risk-levels")
+def risk_levels(request: Request, service: TaskService = Depends(get_service)):
+    service.actor.require("riskList:audit")
+    return run_traced(request, "risk_levels", lambda trace: service.backend.risk_levels())
 
 
 @router.get("/api/tasks/policy/{process_type}")

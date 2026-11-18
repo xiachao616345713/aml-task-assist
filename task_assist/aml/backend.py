@@ -1,6 +1,7 @@
 """只通过现有 aml HTTP 接口访问任务，沿用登录用户的权限范围。"""
 
 from typing import Any
+import time
 
 import httpx
 
@@ -41,7 +42,24 @@ class BackendClient:
         return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError,
                                 httpx.ReadError, httpx.RemoteProtocolError))
 
-    def _request(self, method: str, path: str, *, allow_retry: bool = True, **kwargs: Any) -> Any:
+    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        if not getattr(self.trace, 'id', None):
+            return self._request_impl(method,path,**kwargs)
+        self.trace.add_secret(self.token)
+        started=time.monotonic();at=time.time();status='ok';fields={}
+        try:
+            result=self._request_impl(method,path,**kwargs)
+            fields['output']=result
+            return result
+        except Exception as exc:
+            status='error';fields['error_type']=type(exc).__name__
+            raise
+        finally:
+            self.trace.record('backend',path,status,method=method,
+                input={k:v for k,v in kwargs.items() if k in {'params','json'}},
+                started_at=at,duration_ms=round((time.monotonic()-started)*1000,2),**fields)
+
+    def _request_impl(self, method: str, path: str, *, allow_retry: bool = True, **kwargs: Any) -> Any:
         # 只读 GET 可以重试。auditTaskLock 虽为 GET 却有副作用，调用方必须禁用重试。
         attempts = 3 if method == "GET" and allow_retry else 1
 
@@ -90,15 +108,15 @@ class BackendClient:
             raise BackendError("权限响应格式异常")
         return {str(item.get("action")) for item in result["auth"] if isinstance(item, dict) and item.get("action")}
 
-    def risk_page(self, page: int = 1, page_size: int = 20) -> dict:
-        result = self._request("GET", "home/riskList", params={"pageNo": page, "pageSize": page_size})
+    def risk_page(self, page: int = 1, page_size: int = 20, filters: dict | None = None) -> dict:
+        result = self._request("GET", "home/riskList", params={"pageNo": page, "pageSize": page_size, **(filters or {})})
         if not isinstance(result, dict) or not isinstance(result.get("records"), list):
             raise BackendError("风险待办响应格式异常")
         return result
 
-    def bnf_page(self, page: int = 1, page_size: int = 100) -> dict:
+    def bnf_page(self, page: int = 1, page_size: int = 100, filters: dict | None = None) -> dict:
         result = self._request("GET", "custandbnfinfo/bnfReport/queryProcessPage",
-                               params={"pageNo": page, "pageSize": page_size})
+                               params={"pageNo": page, "pageSize": page_size, **(filters or {})})
         if not isinstance(result, dict) or not isinstance(result.get("records"), list):
             raise BackendError("受益所有人待办响应格式异常")
         return result
@@ -122,7 +140,7 @@ class BackendClient:
         return result
 
     def task_lock(self, task_id: str) -> None:
-        # 和前端 BpmNodeInfoMixin 一致，提交前获取办理锁。
+        # 审批接口约定提交前获取办理锁。
         self._request("GET", "aresoft/act/auditTaskLock", allow_retry=False, params={"taskId": task_id})
 
     def complete(self, payload: dict) -> Any:
@@ -138,3 +156,13 @@ class BackendClient:
         if not isinstance(body, dict) or body.get("success") is not True or not body.get("message"):
             raise BackendError("材料上传到 Java 服务失败")
         return str(body["message"])
+
+    def risk_customer_count(self, act_id: str) -> int:
+        result = self._request("GET", f"risk/activitiRel/queryActRelCount/{act_id}")
+        if not isinstance(result, int) or isinstance(result, bool) or result < 0:
+            raise BackendError("风险任务客户范围无法核实")
+        return result
+
+    def submit_batch_payload(self, path: str, payload: dict, submission_id: str):
+        return self._request("POST", path, allow_retry=False, json=payload,
+                             headers={"X-Assist-Submission-Id": submission_id})

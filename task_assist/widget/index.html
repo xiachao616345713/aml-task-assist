@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AML 任务助手</title>
-  <link rel="stylesheet" href="/widget/styles.css?v=20261113-markdown1">
+  <link rel="stylesheet" href="/widget/styles.css?v=20261113-batchtrace5">
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -17,7 +17,7 @@
     </aside>
 
     <main class="chat-panel">
-      <header class="topbar"><div class="workbench-heading"><button id="toggleSidebar" class="secondary" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="展开或收起历史对话">☰</button><div><h1>任务处理工作台</h1><p>整理资料、核对来源，预填审批资料</p></div></div><div class="topbar-actions"><button id="settingsButton" class="secondary" type="button">系统配置</button><button id="automationLink" class="secondary" type="button">定时扫描</button><button id="tasksButton" class="secondary" type="button" aria-haspopup="dialog" aria-controls="taskDrawer">我的待办 <span id="taskBadge" class="task-count">—</span></button><button id="traceLink" class="text-button trace-pill" type="button">调用链</button></div></header>
+      <header class="topbar"><div class="workbench-heading"><button id="toggleSidebar" class="secondary" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="展开或收起历史对话">☰</button><div><h1>任务处理工作台</h1><p>整理资料、核对来源，预填审批资料</p></div></div><div class="topbar-actions"><button id="uploadMaterialsButton" class="primary" type="button" aria-haspopup="dialog" aria-controls="taskDrawer">上传资料</button><button id="submissionRecordsButton" class="secondary" type="button" aria-haspopup="dialog" aria-controls="submissionRecordsDialog">资料提交记录</button><button id="settingsButton" class="secondary" type="button">系统配置</button><button id="automationLink" class="secondary" type="button">定时扫描</button><button id="tasksButton" class="secondary" type="button" aria-haspopup="dialog" aria-controls="taskDrawer">我的待办 <span id="taskBadge" class="task-count">—</span></button><button id="traceLink" class="text-button trace-pill" type="button">调用链</button></div></header>
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="automationView" class="automation-view hidden" aria-label="定时扫描">
         <div class="panel-heading"><h2>定时扫描</h2><button id="closeAutomation" type="button" class="text-button">返回对话</button></div>
@@ -36,7 +36,7 @@
       </section>
       <div id="chatView" class="chat-view">
         <div id="messages" class="messages" aria-live="polite">
-          <div class="empty-state"><div class="empty-icon">✦</div><h2>开始处理今天的任务</h2><p>可以问“我有多少待办？”或点击上方「我的待办」选择任务。</p></div>
+          <div class="empty-state"><div class="empty-icon">✦</div><h2>开始处理今天的任务</h2><p>点击上方「上传资料」，选择任务类型并上传整批资料，自动匹配审批记录；不确定的跳过。</p></div>
         </div>
         <form id="chatForm" class="composer">
           <label for="question" class="sr-only">发送消息</label>
@@ -86,10 +86,13 @@
       <div class="task-drawer-body">
       <div class="summary-card"><div class="summary-label">待处理总数</div><div id="taskTotal" class="summary-number">—</div><div id="taskTypes" class="summary-subtitle">登录后加载</div></div>
       <div id="taskTypeList" class="task-type-list"></div>
+      <p id="materialEntryHint" class="muted">批量处理请使用顶部「上传资料」：按任务类型上传，系统自动匹配记录。此处仅用于查看待办。</p>
       <details id="riskGroup" class="task-group"><summary>风险待办 <span id="riskCount" class="task-count">—</span></summary>
+      <form id="riskFilters" class="task-filters"><label>风险等级<select name="riskLev" id="riskLevelFilter"><option value="">全部等级</option></select></label><button type="submit" class="secondary">筛选</button><button type="reset" class="text-button">重置</button></form>
       <div id="riskTasks" class="task-list"></div>
       <button id="riskMore" class="text-button hidden" type="button">加载更多</button></details>
       <details id="bnfGroup" class="task-group"><summary>受益所有人核验 <span id="bnfCount" class="task-count">—</span></summary>
+      <form id="bnfFilters" class="task-filters"><div id="bnfFilterFields"></div><button type="submit" class="secondary">筛选</button><button type="reset" class="text-button">重置</button></form>
       <div id="bnfTasks" class="task-list"></div>
       <button id="bnfMore" class="text-button hidden" type="button">加载更多</button></details>
       <details class="task-group"><summary>补充材料 <span id="materialCount" class="task-count">—</span></summary>
@@ -99,12 +102,48 @@
       </details></div>
     </dialog>
 
+  <dialog id="submissionRecordsDialog" class="dialog batch-dialog">
+    <div class="dialog-inner">
+      <div class="dialog-title"><h2>资料提交记录</h2><button id="closeSubmissionRecords" type="button" class="icon-button" aria-label="关闭">×</button></div>
+      <form id="submissionRecordsFilters" class="task-filters">
+        <label>任务类型<select id="submissionRecordsType"><option value="">全部类型</option><option value="risk">客户风险等级评估</option><option value="bnfValidate">受益所有人核验</option></select></label>
+        <label>批次状态<select id="submissionRecordsStatus"><option value="">全部状态</option><option value="open">等待上传</option><option value="processing">正在处理</option><option value="finished">处理完成</option><option value="error">处理中断</option></select></label>
+        <button class="secondary" type="submit">查询记录</button>
+      </form>
+      <p id="submissionRecordsSummary" role="status"></p><div id="submissionRecordsList"></div>
+      <div class="dialog-actions"><button id="submissionRecordsPrevious" type="button" class="text-button">上一页</button><button id="submissionRecordsNext" type="button" class="text-button">下一页</button></div>
+      <div id="submissionRecordDetail"></div>
+    </div>
+  </dialog>
+
+  <dialog id="batchTracesDialog" class="dialog batch-dialog">
+    <div class="dialog-inner"><div class="dialog-title"><h2>资料提交全链路</h2><button id="closeBatchTraces" type="button" class="icon-button" aria-label="关闭">×</button></div>
+      <p>任务类型由用户选择；批量业务工具由编排器调度，模型负责识别和整理。点击任一阶段查看模型输入输出、工具参数、结果、耗时及Token。未返回的用量和思考不会推测。</p>
+      <div id="batchTraceSummary"></div><div id="batchTraceList"></div>
+    </div>
+  </dialog>
+
+  <dialog id="batchDialog" class="dialog batch-dialog">
+    <div class="dialog-inner">
+      <div class="dialog-title"><h2>按任务类型批量上传资料</h2><button type="button" id="closeBatch" class="icon-button" aria-label="关闭">×</button></div>
+      <p>从文件名和资料内容识别审批记录，合并对应材料，提交确定项；未匹配、冲突或缺件的跳过。当前按现有接口推进流程，处理结果和来源会记入对话。</p>
+      <label>任务类型<select id="batchProcessType"><option value="risk">客户风险等级评估</option><option value="bnfValidate">受益所有人核验</option></select></label>
+      <p class="muted">核验当前仅自动提交可确认无差异的初审；复杂差异、复审报送及未接入的类型会跳过。</p>
+      <label class="upload-label">选择整批文件或 ZIP<input type="file" id="batchFiles" multiple accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.txt,.csv,.json,.md,.markdown,.zip"></label>
+      <div class="dialog-actions"><button type="button" id="newBatch" class="secondary">新批次</button><button type="button" id="runBatch" class="primary">上传、匹配并提交确定项</button></div>
+      <p id="batchStatus" role="status">无需先选择审批记录。</p>
+      <button id="batchTraceButton" class="secondary" type="button">查看本批次全链路</button>
+      <div id="batchSources"></div><div id="batchResults"></div>
+      <details><summary>历史批次 · 查看具体提交内容及来源</summary><button id="refreshBatches" class="text-button" type="button">刷新批次</button><div id="batchHistory"></div></details>
+    </div>
+  </dialog>
+
   <dialog id="materialDialog" class="dialog">
     <form method="dialog" class="dialog-inner">
       <div class="dialog-title"><h2 id="dialogTitle">补充材料</h2><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
       <p id="dialogDescription"></p>
       <div id="dialogFiles"></div>
-      <label class="upload-label">选择材料文件<input type="file" id="materialFile" accept=".pdf,.png,.jpg,.jpeg,.docx,.txt,.csv,.json"></label>
+      <label class="upload-label">批量选择材料（支持 ZIP）<input type="file" id="materialFile" multiple accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.txt,.csv,.json,.md,.markdown,.zip"></label>
       <section id="prefillResult" aria-live="polite"></section>
       <button type="button" id="generatePrefill" class="secondary">整理资料并生成预填</button>
       <div class="dialog-actions"><button type="button" id="uploadButton" class="secondary">上传文件</button><button type="button" id="submitMaterial" class="primary">提交材料并继续</button></div>
@@ -159,6 +198,6 @@
   </dialog>
   <script src="/widget/marked.js?v=18.2.0" defer></script>
   <script src="/widget/purify.js?v=3.4.17" defer></script>
-  <script src="/widget/app.js?v=20261113-markdown1" defer></script>
+  <script src="/widget/app.js?v=20261113-batchtrace5" defer></script>
 </body>
 </html>

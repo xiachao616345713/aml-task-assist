@@ -18,14 +18,19 @@ def require_material_permission(service, store, material: dict) -> dict:
     return workflow
 
 
-def bnf_handoff(service, store, workflow_id: str) -> dict:
-    service.actor.require("beneficiary:audit:handleProcess")
+def material_handoff(service, store, workflow_id: str) -> dict:
     workflow = store.workflow(workflow_id, service.actor.user_id)
-    if workflow["process_type"] != "bnfValidate" or workflow["status"] != "awaiting_business":
+    action = MATERIAL_PERMISSIONS.get(workflow["process_type"])
+    if action is None:
+        raise StateConflict("该流程尚未配置材料权限")
+    service.actor.require(action)
+    if workflow["status"] != "awaiting_business":
         raise StateConflict("当前流程尚未进入原系统办理阶段")
     material = store.material_task(workflow["material_task_id"], service.actor.user_id)
     return {
-        "workflow_id": workflow_id, "task_id": workflow["task_id"], "report_id": workflow["act_id"],
+        "workflow_id": workflow_id, "task_id": workflow["task_id"],
+        **({"report_id": workflow["act_id"]} if workflow["process_type"] == "bnfValidate" else {}),
+        "process_type": workflow["process_type"], "act_id": workflow["act_id"],
         "files": [{"fileName": file["filename"], "filePath": file["backend_path"],
                    "fileSize": file["size_bytes"]} for file in material["attachments"]],
     }

@@ -2,7 +2,7 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const state = { ownerId: "", token: "", hostOrigin: "", conversationId: "", lastTrace: "", selectedTrace: "",
-    prefill: null, sourceUrl: "", pendingSource: "", connected: false, traceOpen: false, materialId: "", workflowId: "", busy: false };
+    prefill: null, sourceUrl: "", pendingSource: "", pendingTask: null, batchId: "", batchBusy: false, connected: false, traceOpen: false, materialId: "", workflowId: "", busy: false };
   const statusName = { inspecting: "正在核查", waiting_material: "等待补材料", awaiting_human: "等待人工确认",
     awaiting_business: "请回原系统办理", completed: "已提交", uncertain: "结果待核对", blocked: "无法办理" };
   // getRandomValues 在普通 HTTP 页面也可用，避免随机 ID 初始化阻断所有按钮。
@@ -10,6 +10,8 @@
     (byte) => byte.toString(16).padStart(2, "0")).join("");
   let sourceLoad = 0;
   let taskEpoch = 0;
+  const taskFilters = { risk: new URLSearchParams(), bnf: new URLSearchParams() };
+  const taskLoads = {risk: 0, bnf: 0};
   const taskPaging = { risk: { page: 0, loaded: 0 }, bnf: { page: 0, loaded: 0 } };
   let allowedOrigins = new Set([location.origin]);
 
@@ -119,7 +121,7 @@
     if (!messages.length) {
       const emptyBox = node("div", "empty-state");
       emptyBox.append(node("div", "empty-icon", "✦"), node("h2", "", "开始处理今天的任务"),
-        node("p", "", "可以问“我有多少待办？”或点击上方「我的待办」选择任务。"));
+        node("p", "", "点击上方「上传资料」，选择任务类型并上传整批资料，自动匹配审批记录；不确定的跳过。"));
       list.append(emptyBox); return;
     }
     for (const msg of messages) {
@@ -336,12 +338,13 @@
 
   async function loadRiskTasks(append = false) {
     const epoch = taskEpoch;
+    const load = ++taskLoads.risk;
     const page = append ? taskPaging.risk.page + 1 : 1;
     const list = $("riskTasks");
     $("riskMore").disabled = true;
     try {
-      const data = await api("/api/tasks/risk?page=" + page + "&page_size=20");
-      if (epoch !== taskEpoch) return;
+      const data = await api("/api/tasks/risk?page=" + page + "&page_size=20&" + taskFilters.risk.toString());
+      if (epoch !== taskEpoch || load !== taskLoads.risk) return;
       if (!append) list.replaceChildren();
       taskPaging.risk = { page, loaded: (append ? taskPaging.risk.loaded : 0) + data.records.length };
       $("riskCount").textContent = data.total;
@@ -352,27 +355,25 @@
         card.append(node("div", "task-card-title", (item.task_name || "风险审核") + " · " + item.task_id));
         const grade = item.risk_level;
         card.append(node("div", "task-card-meta", grade.grade + " · " + grade.reason));
-        const actions = node("div", "task-card-actions");
-        const button = node("button", "mini-button", grade.can_one_click ? "开始自动审核" : "查看补材料流程");
-        button.onclick = () => startReview("risk", item.task_id, item.act_id);
-        actions.append(button); card.append(actions); list.append(card);
+        list.append(card);
       }
       if (!append && !data.records.length) empty(list, "暂无风险待办");
     } catch (err) {
-      if (epoch !== taskEpoch) return;
+      if (epoch !== taskEpoch || load !== taskLoads.risk) return;
       if (append) notice(err.message, true);
       else { $("riskCount").textContent = "不可用"; empty(list, "风险列表不可用：" + err.message); }
-    } finally { if (epoch === taskEpoch) $("riskMore").disabled = false; }
+    } finally { if (epoch === taskEpoch && load === taskLoads.risk) $("riskMore").disabled = false; }
   }
 
   async function loadBnfTasks(append = false) {
     const epoch = taskEpoch;
+    const load = ++taskLoads.bnf;
     const page = append ? taskPaging.bnf.page + 1 : 1;
     const list = $("bnfTasks");
     $("bnfMore").disabled = true;
     try {
-      const data = await api("/api/tasks/bnf?page=" + page + "&page_size=20");
-      if (epoch !== taskEpoch) return;
+      const data = await api("/api/tasks/bnf?page=" + page + "&page_size=20&" + taskFilters.bnf.toString());
+      if (epoch !== taskEpoch || load !== taskLoads.bnf) return;
       if (!append) list.replaceChildren();
       taskPaging.bnf = { page, loaded: (append ? taskPaging.bnf.loaded : 0) + data.records.length };
       $("bnfCount").textContent = data.total;
@@ -382,27 +383,29 @@
         const card = node("div", "task-card");
         card.append(node("div", "task-card-title", item.task_name + " · " + item.task_id));
         card.append(node("div", "task-card-meta", item.reason));
-        const button = node("button", "mini-button", "发起补材料任务");
-        button.onclick = () => startReview("bnfValidate", item.task_id, item.act_id);
-        card.append(button); list.append(card);
+        list.append(card);
       }
       if (!append && !data.records.length) empty(list, "暂无受益所有人核验待办");
     } catch (err) {
-      if (epoch !== taskEpoch) return;
+      if (epoch !== taskEpoch || load !== taskLoads.bnf) return;
       if (append) notice(err.message, true);
       else { $("bnfCount").textContent = "不可用"; empty(list, "核验列表不可用：" + err.message); }
-    } finally { if (epoch === taskEpoch) $("bnfMore").disabled = false; }
+    } finally { if (epoch === taskEpoch && load === taskLoads.bnf) $("bnfMore").disabled = false; }
   }
 
   async function startReview(processType, taskId, actId) {
     try {
       const data = await api("/api/workflows/reviews", { method: "POST",
         body: JSON.stringify({ process_type: processType, task_id: taskId, act_id: actId,
-          conversation_id: state.conversationId || null }) });
-      if (data.workflow.status === "waiting_material") notice("已创建补充材料任务，上传后可继续流程");
+          conversation_id: state.conversationId || null, purpose: "prefill" }) });
+      if (data.workflow.status === "waiting_material") notice("已创建资料整理任务，请批量上传并生成预填");
       else if (data.workflow.status === "completed") notice("任务已提交审批");
       else notice("审核流程状态：" + (statusName[data.workflow.status] || data.workflow.status));
       await refreshTasks();
+      if (data.workflow.status === "waiting_material") {
+        $("taskDrawer").close();
+        await openMaterial(data.workflow.material_task_id);
+      }
     } catch (err) { notice(err.message, true); }
   }
 
@@ -448,6 +451,215 @@
     if (!data.records.length) empty(list, "暂无审核流程");
   }
 
+  let submissionRecordsPage = 1;
+  let submissionRecordsTotal = 0;
+  let submissionRecordsLoad = 0;
+  let submissionRecordFilters = new URLSearchParams();
+
+  function closeMaterialPanels() {
+    for (const id of ["submissionRecordsDialog", "batchTracesDialog", "batchDialog"]) if ($(id).open) $(id).close();
+  }
+
+  async function openSubmissionTrace(traceId) {
+    closeMaterialPanels();
+    await openTraceView(traceId);
+  }
+
+  async function loadSubmissionRecords(page = 1) {
+    const load = ++submissionRecordsLoad;
+    const params = new URLSearchParams(submissionRecordFilters);
+    params.set("page",page); params.set("page_size",20);
+    $("submissionRecordsSummary").textContent = "正在读取资料提交记录…";
+    const data = await api("/api/material-batches?" + params.toString());
+    if (load !== submissionRecordsLoad) return;
+    submissionRecordsPage = page;
+    submissionRecordsTotal = data.total ?? data.records.length;
+    $("submissionRecordsSummary").textContent = "共 " + submissionRecordsTotal + " 个批次 · 第 " + page + " 页";
+    $("submissionRecordsPrevious").disabled = page <= 1;
+    $("submissionRecordsNext").disabled = page * 20 >= submissionRecordsTotal;
+    const list = $("submissionRecordsList"); list.replaceChildren();
+    for (const batch of data.records) {
+      const card = node("section","task-card");
+      card.append(node("h3","", (batch.process_type === "risk" ? "风险评估" : "受益所有人核验") + " · " + (batchStatusNames[batch.status] || batch.status)),
+        node("p","",new Date(batch.created_at*1000).toLocaleString() + " · 批次 " + batch.id),
+        node("p","", "来源 " + (batch.source_count ?? "—") + " · 提交成功 " + (batch.submitted_count ?? "—") + " · 跳过 " + (batch.skipped_count ?? "—") + " · 结果不明 " + (batch.uncertain_count ?? "—")));
+      const buttons = node("div","task-card-actions");
+      const detail = node("button","secondary","查看提交明细"); detail.type="button";
+      detail.onclick = () => showSubmissionRecord(batch.id).catch(err => notice(err.message,true));
+      const traces = node("button","secondary","查看整批 Trace"); traces.type="button";
+      traces.onclick = () => openBatchTraces(batch.id).catch(err => notice(err.message,true));
+      const chat = node("button","text-button","查看对应对话"); chat.type="button";
+      chat.onclick = () => { closeMaterialPanels(); openConversation(batch.conversation_id).catch(err => notice(err.message,true)); };
+      buttons.append(detail,traces,chat); card.append(buttons); list.append(card);
+    }
+    if (!data.records.length) empty(list,"没有符合条件的资料提交记录");
+  }
+
+  async function showSubmissionRecord(batchId) {
+    const data = await api("/api/material-batches/" + batchId);
+    const box = $("submissionRecordDetail"); box.replaceChildren(node("h2","","批次明细 · " + batchId));
+    const trace = node("button","secondary","查看本批次完整链路");trace.type="button";
+    trace.onclick = () => openBatchTraces(batchId).catch(err => notice(err.message,true));box.append(trace);
+    for (const item of data.records) {
+      const card = node("section","task-card");
+      card.append(node("h3","",(batchStatusNames[item.status] || item.status) + " · " + (item.task_id || "未匹配记录")),
+        node("p","","业务记录：" + (item.act_id || "—") + " · " + (item.data.reason || "")));
+      const details = node("details");details.append(node("summary","","实际提交内容、来源和接口返回"),node("pre","source-text",JSON.stringify(item.data,null,2)));card.append(details);
+      if (item.data.trace_id) {
+        const link = node("button","text-button","查看本条处理 Trace"); link.type="button";
+        link.onclick = () => openSubmissionTrace(item.data.trace_id).catch(err => notice(err.message,true));card.append(link);
+      }
+      box.append(card);
+    }
+    if (!data.records.length) box.append(node("p","muted","本批次尚未产生逐条处理结果"));
+    box.append(node("h3","","本批来源原件"));
+    for (const source of data.sources) {
+      const link = node("button","file-row text-button",source.filename + (source.error ? " · " + source.error : " · 查看来源"));link.type="button";
+      link.onclick = () => openSource(source.id,null,"/api/batch-sources/").catch(err => notice(err.message,true));box.append(link);
+    }
+    box.scrollIntoView({block:"start"});
+  }
+
+  async function openBatchTraces(batchId) {
+    if (!$("batchTracesDialog").open) $("batchTracesDialog").showModal();
+    $("batchTraceSummary").textContent="正在读取批次 " + batchId + " 的链路…";
+    $("batchTraceList").replaceChildren();
+    const data = await api("/api/material-batches/" + batchId + "/traces");
+    const agg = data.aggregates || {};
+    const box = $("batchTraceSummary");box.replaceChildren();
+    const tiles = node("div","trace-tiles");
+    tiles.append(tile("请求链路",agg.requests ?? data.records.length),tile("请求累计耗时",fmtDuration(agg.request_duration_ms)),
+      tile("模型累计耗时",fmtDuration(agg.model_duration_ms)),tile(agg.usage_complete === false ? "已知 Token" : "Token",fmtCompact(agg.total_tokens?.total)),
+      tile("模型调用",agg.model_calls ?? "—"),tile("工具调用",agg.tool_calls ?? "—"));box.append(tiles);
+    box.append(node("p","muted","批次 " + batchId + "；累计请求耗时不包含用户选文件和阅读页面的等待时间。"));
+    if (agg.pending_or_expired) box.append(node("p","muted",agg.pending_or_expired + " 条链路尚未保存、正在运行或已超过留存期，当前统计仅含已保存链路。"));
+    if (agg.usage_complete === false) box.append(node("p","muted","部分模型服务未返回Token用量，显示已知用量，不按0估算缺失部分。"));
+    const phases={create:"创建与用户意图",upload:"上传与解析资料",process:"识别、匹配与提交"};
+    for (const item of data.records) {
+      const row=node("section","task-card");
+      row.append(node("h3","",phases[item.phase] || item.phase),node("p","",item.trace_id + " · " + (item.available ? fmtDuration(item.duration_ms) : "尚无已保存详情")));
+      if (item.available) {
+        const button=node("button","secondary","查看完整时间线");button.type="button";
+        button.onclick=()=>openSubmissionTrace(item.trace_id).catch(err=>notice(err.message,true));row.append(button);
+      }
+      $("batchTraceList").append(row);
+    }
+    if (!data.records.length) empty($("batchTraceList"),"旧批次没有历史 Trace，无法补造；新提交会自动记录。");
+  }
+
+  const batchStatusNames = {open:"等待上传", processing:"正在识别与提交", finished:"处理完成", error:"处理中断，核对已保存结果", prepared:"已保存请求", submitting:"已占位，提交结果待核对", submitted:"接口提交成功", skipped:"跳过", uncertain:"结果不明，禁止自动重发"};
+
+  async function openBatchUpload(processType) {
+    if (processType && !state.batchBusy && !state.batchId) $("batchProcessType").value = processType;
+    if (!$("batchDialog").open) $("batchDialog").showModal();
+    await loadBatchHistory().catch(err => { $("batchStatus").textContent = err.message; });
+  }
+
+  async function loadBatchHistory() {
+    let data;
+    try { data = await api("/api/material-batches"); }
+    catch (err) { if (err.message === "Not Found") throw new Error("批量资料接口尚未加载，请重启助手服务后刷新页面"); throw err; }
+    const list = $("batchHistory"); list.replaceChildren();
+    for (const batch of data.records) {
+      const button = node("button", "file-row text-button", batch.process_type + " · " + new Date(batch.created_at * 1000).toLocaleString() + " · " + (batchStatusNames[batch.status] || batch.status));
+      button.type = "button";
+      button.disabled = state.batchBusy;
+      button.onclick = async () => {
+        state.batchId = batch.id;
+        $("batchProcessType").value = batch.process_type;
+        $("batchProcessType").disabled = true;
+        $("runBatch").disabled = batch.status !== "open";
+        await refreshBatch().catch(err => notice(err.message,true));
+      };
+      list.append(button);
+    }
+    if (!data.records.length) empty(list,"暂无批次；选择类型并上传即可开始");
+  }
+
+  async function refreshBatch() {
+    const id = state.batchId;
+    if (!id) return;
+    const data = await api("/api/material-batches/" + id);
+    if (state.batchId !== id) return;
+    const counts = {};
+    for (const item of data.records) counts[item.status] = (counts[item.status] || 0) + 1;
+    $("batchStatus").textContent = "批次 " + id + " · " + (batchStatusNames[data.batch.status] || data.batch.status) + " · " + Object.entries(counts).map(([key,value]) => (batchStatusNames[key] || key) + " " + value).join(" / ");
+    const files = $("batchSources"); files.replaceChildren();
+    for (const source of data.sources) {
+      const link = node("button","file-row text-button",source.filename + (source.error ? " · " + source.error : " · 查看来源"));
+      link.type = "button";
+      link.onclick = () => openSource(source.id,null,"/api/batch-sources/").catch(err => notice(err.message,true));
+      files.append(link);
+    }
+    const box = $("batchResults"); box.replaceChildren();
+    for (const item of data.records) {
+      const card = node("section","task-card");
+      card.append(node("h3","",(batchStatusNames[item.status] || item.status) + " · " + (item.task_id || "未匹配记录")),
+        node("p","", "业务记录：" + (item.act_id || "—") + " · " + (item.data.reason || "")));
+      if (item.data.trace_id) {
+        const traceLink=node("button","text-button","查看本条处理 Trace");traceLink.type="button";
+        traceLink.onclick=()=>openSubmissionTrace(item.data.trace_id).catch(err=>notice(err.message,true));card.append(traceLink);
+      }
+      const details = node("details"); details.append(node("summary","","具体提交内容、匹配依据及接口结果"),node("pre","source-text",JSON.stringify(item.data,null,2)));
+      card.append(details);
+      for (const refs of Object.values(item.data.field_provenance || {})) for (const proof of refs) {
+        if (!proof.source_id) continue;
+        const button = node("button","file-row text-button",(proof.filename || proof.source_id) + (proof.quote ? "：“" + proof.quote + "”" : " · 查看原件"));
+        button.type = "button";
+        button.onclick = () => openSource(proof.source_id,proof,"/api/batch-sources/").catch(err => notice(err.message,true));
+        card.append(button);
+      }
+      box.append(card);
+    }
+    return data;
+  }
+
+  async function runMaterialBatch() {
+    if (state.batchBusy) return;
+    const files = Array.from($("batchFiles").files);
+    if (!files.length && !state.batchId) return notice("请先选择整批资料",true);
+    state.batchBusy = true;
+    for (const id of ["runBatch","newBatch","batchFiles","batchProcessType"]) $(id).disabled = true;
+    let timer;
+    try {
+      if (!state.batchId) {
+        const batch = await api("/api/material-batches",{method:"POST",body:JSON.stringify({process_type:$("batchProcessType").value,conversation_id:state.conversationId || null})});
+        state.batchId = batch.id;
+        state.conversationId = batch.conversation_id;
+      }
+      const failures = [];
+      for (const [index,file] of files.entries()) {
+        $("batchStatus").textContent = "上传 " + (index+1) + "/" + files.length + "：" + file.name;
+        const form = new FormData(); form.append("file",file);
+        try { await api("/api/material-batches/" + state.batchId + "/files",{method:"POST",body:form}); }
+        catch (err) { failures.push(file.name + "：" + err.message); }
+      }
+      $("batchFiles").value = "";
+      await refreshBatch();
+      $("batchStatus").textContent = "正在识别资料、匹配审批记录并提交确定项…";
+      timer = setInterval(() => refreshBatch().catch(() => {}),2500);
+      await api("/api/material-batches/" + state.batchId + "/process",{method:"POST"});
+      await refreshBatch();
+      if (failures.length) notice("部分文件未上传：" + failures.join("；"),true);
+      await openConversation(state.conversationId);
+      await refreshTasks();
+    } catch (err) {
+      notice(err.message,true);
+      await refreshBatch().catch(() => {});
+      $("batchStatus").textContent += "；" + err.message + "。已有请求请先核对结果，不会自动重发。";
+    } finally {
+      clearInterval(timer);
+      state.batchBusy = false;
+      $("newBatch").disabled = false;
+      const detail = await refreshBatch().catch(() => null);
+      const open = !state.batchId || detail?.batch.status === "open";
+      $("runBatch").disabled = !open;
+      $("batchFiles").disabled = !open;
+      $("batchProcessType").disabled = !!state.batchId;
+      await loadBatchHistory().catch(() => {});
+    }
+  }
+
   async function openMaterial(id) {
     state.materialId = id;
     const task = await api("/api/material-tasks/" + id);
@@ -461,14 +673,33 @@
   }
 
   async function uploadMaterial() {
-    const file = $("materialFile").files[0];
-    if (!file || !state.materialId) return notice("请选择材料文件", true);
-    const form = new FormData(); form.append("file", file);
+    const files = Array.from($("materialFile").files);
+    const materialId = state.materialId;
+    if (!files.length || !materialId) return notice("请选择材料文件", true);
+    $("uploadButton").disabled = true;
+    $("submitMaterial").disabled = true;
+    $("generatePrefill").disabled = true;
+    let uploaded = 0;
+    const failures = [];
     try {
-      await api("/api/material-tasks/" + state.materialId + "/files", { method: "POST", body: form });
-      $("materialFile").value = "";
-      await openMaterialRefresh(); notice("材料已上传");
+      for (const file of files) {
+        const form = new FormData(); form.append("file", file);
+        try {
+          await api("/api/material-tasks/" + materialId + "/files", { method: "POST", body: form });
+          uploaded++;
+        } catch (err) { failures.push(file.name + "：" + err.message); }
+      }
+      if (state.materialId === materialId) {
+        $("materialFile").value = "";
+        await openMaterialRefresh();
+      }
+      notice("已上传 " + uploaded + " / " + files.length + " 份" + (failures.length ? "；失败：" + failures.join("；") : ""), !!failures.length);
     } catch (err) { notice(err.message, true); }
+    finally {
+      $("uploadButton").disabled = false;
+      $("submitMaterial").disabled = false;
+      $("generatePrefill").disabled = false;
+    }
   }
 
   async function openMaterialRefresh() {
@@ -519,9 +750,9 @@
     finally { $("generatePrefill").disabled = false; }
   }
 
-  async function openSource(id, citation) {
+  async function openSource(id, citation, sourcePrefix = "/api/sources/") {
     const load = ++sourceLoad;
-    const source = await api("/api/sources/" + encodeURIComponent(id));
+    const source = await api(sourcePrefix + encodeURIComponent(id));
     if (load !== sourceLoad) return;
     if (state.sourceUrl) URL.revokeObjectURL(state.sourceUrl);
     state.sourceUrl = "";
@@ -532,7 +763,7 @@
       const pre = node("pre", "source-text");
       // API 偏移按 Unicode 字符计数，避免 emoji 的 UTF-16 代理对造成定位偏移。
       const chars = Array.from(source.text_content);
-      if (citation && citation.sha256 === source.sha256 && chars.slice(citation.start, citation.end).join("") === citation.quote) {
+      if (citation && citation.area !== "filename" && citation.sha256 === source.sha256 && chars.slice(citation.start, citation.end).join("") === citation.quote) {
         pre.append(document.createTextNode(chars.slice(0, citation.start).join("")),
           node("mark", "", citation.quote), document.createTextNode(chars.slice(citation.end).join("")));
       } else pre.textContent = source.text_content;
@@ -566,7 +797,7 @@
       const result = await api("/api/material-tasks/" + state.materialId + "/submit", { method: "POST" });
       $("materialDialog").close();
       notice(result.workflow.status === "awaiting_human" ? "材料已接收，请完成高风险人工审核" :
-        result.workflow.status === "awaiting_business" ? "材料已接收，请回原系统完成受益所有人核验" : "材料已接收，流程已继续");
+        result.workflow.status === "awaiting_business" ? "材料已接收，请回原系统检查预填资料并完成审核" : "材料已接收，流程已继续");
       if (result.workflow.status === "awaiting_business" && state.hostOrigin) {
         const handoff = await api("/api/workflows/" + result.workflow.id + "/handoff");
         window.parent.postMessage({ type: "aml-agent-handoff", handoff }, state.hostOrigin);
@@ -585,9 +816,21 @@
     } catch (err) { notice(err.message, true); }
   }
 
+  async function loadRiskLevels() {
+    try {
+      const levels = await api("/api/tasks/risk-levels");
+      const select = $("riskLevelFilter");
+      const previous = select.value;
+      select.replaceChildren(new Option("全部等级", ""));
+      for (const level of levels) select.append(new Option(level.memo, level.riskno));
+      select.value = previous;
+    } catch (err) { $("riskLevelFilter").title = err.message; }
+  }
+
   async function refreshTasks() {
     const epoch = ++taskEpoch;
     $("riskMore").classList.add("hidden"); $("bnfMore").classList.add("hidden");
+    loadRiskLevels();
     const results = await Promise.allSettled([loadSummary(), loadRiskTasks(), loadBnfTasks(), loadMaterialTasks(), loadWorkflows()]);
     if (epoch !== taskEpoch) return;
     for (const [index, countId, listId] of [[3, "materialCount", "materialTasks"], [4, "workflowCount", "workflows"]]) {
@@ -639,7 +882,7 @@
     else if (!state.selectedTrace && records.length) await selectTrace(records[0].trace_id);
   }
 
-  const KIND_LABEL = { api: "请求", operation: "处理", agent: "Agent", model: "模型调用", tool: "工具调用",
+  const KIND_LABEL = { intent:"意图与执行计划",stage:"处理阶段",validation:"规则核验",model_result:"结构化模型结果",backend_attempt:"接口尝试", api: "请求", operation: "处理", agent: "Agent", model: "模型调用", tool: "工具调用",
     tool_failure: "工具失败", backend: "后端调用", backend_attempt: "后端尝试", auth: "身份认证",
     policy: "策略校验", decision: "决策" };
 
@@ -708,6 +951,10 @@
     detail.append(node("h2", "", data.name || "调用链"), titleRow);
     if (data.conversation_id) detail.append(node("div", "trace-meta", "会话: " + data.conversation_id));
     if (data.workflow_id) detail.append(node("div", "trace-meta", "工作流: " + data.workflow_id));
+    if (data.batch_id) {
+      const link=node("button","text-button","查看整批 Trace · " + data.batch_id);link.type="button";
+      link.onclick=()=>openBatchTraces(data.batch_id).catch(err=>notice(err.message,true));detail.append(link);
+    }
 
     const events = data.events || [];
     const usage = data.total_tokens || {};
@@ -717,12 +964,13 @@
     tiles.append(
       tile("总耗时", fmtDuration(data.duration_ms)),
       tile("模型累计耗时", fmtDuration(data.model_duration_ms ?? events.filter(e => e.kind === "model").reduce((sum, e) => sum + (e.duration_ms || 0), 0))),
-      tile("Token", fmtCompact(usage.total), "", "输入 " + fmtCompact(usage.input) + " · 输出 " + fmtCompact(usage.output)),
+      tile(data.usage_complete === false ? "已知 Token" : "Token", fmtCompact(usage.total), "", "输入 " + fmtCompact(usage.input) + " · 输出 " + fmtCompact(usage.output)),
       tile("模型调用", data.model_calls ?? countKind("model")),
       tile("工具调用", data.tool_calls ?? countKind("tool")),
       tile("错误事件", errorEvents, errorEvents > 0 ? "status-error" : ""));
     detail.append(tiles);
 
+    if (data.usage_complete === false) detail.append(node("p","muted","部分模型未返回 Token，用量仅汇总已知部分。"));
     if (data.dropped_events) detail.append(node("div", "trace-meta trace-error", "事件达到保存上限，较早的 " + data.dropped_events + " 条已移除"));
     // 结论与推理摘要只在这里展示一次；时间线会跳过重复的 decision 事件。
     const finalModel = [...events].reverse().find(item => item.kind === "model" && item.visible_output);
@@ -730,22 +978,21 @@
     const hasModelReasoning = events.some((item) => item.kind === "model" && (item.reasoning || item.reasoning_summary));
     if (data.reasoning_summary && !hasModelReasoning) detail.append(summaryBox("模型推理摘要", data.reasoning_summary));
 
-    detail.append(node("h3", "", "模型与工具调用时间线"));
+    detail.append(node("h3", "", "完整执行时间线"));
     detail.append(renderTimeline(events, data));
   }
 
   function renderTimeline(events, data) {
     const box = node("div");
     const seen = new Set();
-    const ordered = events.filter(event => ["model", "tool", "tool_failure"].includes(event.kind) || event.name === "turn_failed")
-      .sort((a, b) => (a.started_at ?? a.at) - (b.started_at ?? b.at));
+    const ordered = [...events].sort((a,b) => (a.started_at ?? (a.at-(a.duration_ms || 0)/1000)) - (b.started_at ?? (b.at-(b.duration_ms || 0)/1000)));
     for (const event of ordered) {
       if (event.run_id && seen.has(event.run_id)) continue;
       if (event.run_id) seen.add(event.run_id);
       if (event.kind === "tool_failure" && events.some(item => item.kind === "tool" && item.name === event.name && item.status === "error")) continue;
       box.append(renderEvent(event));
     }
-    if (!ordered.length) box.append(node("p", "muted", "本轮尚无模型调用记录，请查看执行状态。"));
+    if (!ordered.length) box.append(node("p", "muted", "本链路暂无已保存事件。"));
     return box;
   }
 
@@ -759,6 +1006,7 @@
 
     const body = node("div", "event-body");
     const rendered = new Set(["seq", "at", "kind", "name", "status", "duration_ms", "run_id", "parent_run_id", "started_at"]);
+    if (event.selection_source) body.append(node("p","trace-meta","调用选择来源：" + ({user:"用户界面选择",orchestrator:"服务编排器",model:"模型"}[event.selection_source] || event.selection_source)));
     if (event.kind === "model") {
       box.open = true;
       // 思考过程优先展示逐片累积的 reasoning；输入消息用于核对上下文与工具选择。
@@ -786,7 +1034,7 @@
       }
       for (const key of ["reasoning", "reasoning_summary", "input_messages", "input_message_count",
         "visible_output", "token_usage", "tool_calls", "invalid_tool_calls", "available_tools", "first_token_ms", "finish_reason", "reasoning_available", "usage_details", "usage_available", "output_tokens_per_second", "started_at"]) rendered.add(key);
-    } else if (event.kind === "tool") {
+    } else if (event.kind === "tool" || event.kind === "backend" || event.kind === "validation" || event.kind === "stage") {
       box.open = true;
       if (event.model_run_id) body.append(node("div", "trace-meta", "来自模型调用 " + event.model_run_id));
       if (event.tool_call_id) body.append(node("div", "trace-meta", "工具调用 ID：" + event.tool_call_id));
@@ -887,6 +1135,8 @@
       if (state.ownerId && state.ownerId !== me.user_id) {
         state.conversationId = ""; showMessages([]);
         state.selectedTrace = ""; state.prefill = null;
+        state.batchId = "";
+        $("batchSources").replaceChildren(); $("batchResults").replaceChildren(); $("batchHistory").replaceChildren();
         $("traceList").replaceChildren(); $("traceDetail").replaceChildren();
         $("dashTiles").replaceChildren(); $("dashTable").replaceChildren();
       }
@@ -896,6 +1146,10 @@
       await Promise.all([loadConversations(), refreshTasks()]);
       state.connected = true;
       $("connection").textContent = "已连接";
+      if (state.pendingTask) {
+        const task = state.pendingTask; state.pendingTask = null;
+        await openBatchUpload(task.process_type);
+      }
       if (state.pendingSource) {
         const source = state.pendingSource; state.pendingSource = "";
         await openSource(source).catch((err) => notice(err.message, true));
@@ -913,6 +1167,13 @@
       if (event.data?.type === "aml-agent-token" && event.data.nonce === nonce && typeof event.data.token === "string") {
         state.hostOrigin = event.origin;
         connect(event.data.token);
+      }
+      if (event.data?.type === "aml-agent-open-task" && event.data.nonce === nonce) {
+        const task = event.data.task;
+        if (task && ["risk", "bnfValidate"].includes(task.process_type) && typeof task.task_id === "string" && typeof task.act_id === "string") {
+          if (state.connected) openBatchUpload(task.process_type);
+          else state.pendingTask = task;
+        }
       }
       if (event.data?.type === "aml-agent-open-source" && event.data.nonce === nonce && typeof event.data.sourceId === "string") {
         if (state.connected) openSource(event.data.sourceId).catch((err) => notice(err.message, true));
@@ -939,6 +1200,7 @@
   $("toggleSidebar").onclick = () => setSidebarCollapsed(!$("app").classList.contains("sidebar-collapsed"));
   $("collapseSidebar").onclick = () => setSidebarCollapsed(true);
   $("tasksButton").onclick = () => $("taskDrawer").showModal();
+  $("uploadMaterialsButton").onclick = () => openBatchUpload();
   $("closeTasks").onclick = () => $("taskDrawer").close();
   $("expandTasks").onclick = () => {
     const expanded = !$("taskDrawer").classList.contains("drawer-expanded");
@@ -947,6 +1209,37 @@
     $("expandTasks").setAttribute("aria-pressed", String(expanded));
   };
   $("taskDrawer").addEventListener("click", event => { if (event.target === $("taskDrawer")) $("taskDrawer").close(); });
+  const bnfFields = [
+    ["custId", "客户编号"], ["custName", "客户名称"], ["certCode", "证件号码"],
+    ["certType", "证件类型代码"], ["taskName", "审核节点（多个逗号分隔）"],
+    ["status", "当前状态代码"], ["disCode", "销售商代码（逗号分隔）"],
+    ["disType", "销售类型", [["", "全部"], ["1", "直销"], ["2", "代销"]]],
+    ["bomisCheckId", "业务流水号"], ["preCheckStatus", "预核验结果代码（逗号分隔）"],
+    ["bomisCheckStatus", "BOMIS结果代码（逗号分隔）"], ["diffBizState", "差异报告业务状态代码"],
+    ["diffReportResult", "差异审核结果代码（逗号分隔）"],
+    ["isOpenedAccount", "是否已开户", [["", "全部"], ["0", "未开户"], ["1", "已开户"]]],
+    ["remainingDays", "剩余处理天数", "number"], ["collectDateBegin", "采集开始日期", "date"],
+    ["collectDateEnd", "采集结束日期", "date"],
+    ["column", "排序字段", [["", "默认"], ["remainingDays", "剩余天数"], ["collectDate", "采集日期"]]],
+    ["order", "排序方向", [["", "默认"], ["asc", "升序"], ["desc", "降序"]]]
+  ];
+  for (const [name, label, type] of bnfFields) {
+    const wrapper = node("label", "", label);
+    const input = node(Array.isArray(type) ? "select" : "input"); input.name = name;
+    if (Array.isArray(type)) for (const [value, title] of type) input.append(new Option(title, value));
+    else { input.type = type || "text"; input.maxLength = 300; if (type === "number") input.min = "0"; }
+    wrapper.append(input); $("bnfFilterFields").append(wrapper);
+  }
+  for (const [kind, reload] of [["risk", loadRiskTasks], ["bnf", loadBnfTasks]]) {
+    const form = $(kind + "Filters");
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      taskFilters[kind] = new URLSearchParams(Array.from(new FormData(form)).filter(([, value]) => String(value).trim()));
+      reload();
+    };
+    form.onreset = () => { taskFilters[kind] = new URLSearchParams(); reload(); };
+  }
   $("riskMore").onclick = () => loadRiskTasks(true);
   $("bnfMore").onclick = () => loadBnfTasks(true);
   let initiallyCollapsed = Boolean(window.matchMedia?.("(max-width:760px)").matches);
@@ -1049,6 +1342,32 @@
       notice("扫描配置已保存");
     } catch (err) { $("automationStatus").textContent = "保存失败：" + err.message; }
     finally { $("saveAutomation").disabled = false; }
+  };
+  $("submissionRecordsButton").onclick = () => {
+    if (!$("submissionRecordsDialog").open) $("submissionRecordsDialog").showModal();
+    loadSubmissionRecords(1).catch(err => { $("submissionRecordsSummary").textContent=err.message; });
+  };
+  $("closeSubmissionRecords").onclick = () => $("submissionRecordsDialog").close();
+  $("submissionRecordsFilters").onsubmit = event => {
+    event.preventDefault(); submissionRecordFilters=new URLSearchParams();
+    if ($("submissionRecordsType").value) submissionRecordFilters.set("process_type",$("submissionRecordsType").value);
+    if ($("submissionRecordsStatus").value) submissionRecordFilters.set("status",$("submissionRecordsStatus").value);
+    loadSubmissionRecords(1).catch(err=>notice(err.message,true));
+  };
+  $("submissionRecordsPrevious").onclick = () => loadSubmissionRecords(submissionRecordsPage-1).catch(err=>notice(err.message,true));
+  $("submissionRecordsNext").onclick = () => loadSubmissionRecords(submissionRecordsPage+1).catch(err=>notice(err.message,true));
+  $("batchTraceButton").onclick = () => state.batchId ? openBatchTraces(state.batchId).catch(err=>notice(err.message,true)) : notice("请先创建并上传一个批次",true);
+  $("closeBatchTraces").onclick = () => $("batchTracesDialog").close();
+  $("closeBatch").onclick = () => $("batchDialog").close();
+  $("runBatch").onclick = runMaterialBatch;
+  $("refreshBatches").onclick = () => loadBatchHistory().catch(err => notice(err.message,true));
+  $("newBatch").onclick = () => {
+    if (state.batchBusy) return;
+    state.batchId = "";
+    $("batchFiles").value = "";
+    for (const id of ["batchFiles","batchProcessType","runBatch"]) $(id).disabled = false;
+    $("batchSources").replaceChildren(); $("batchResults").replaceChildren();
+    $("batchStatus").textContent = "选择任务类型并上传整批资料，无需选择记录。";
   };
   $("generatePrefill").onclick = generatePrefill;
   $("closeSource").onclick = () => $("sourceDialog").close();

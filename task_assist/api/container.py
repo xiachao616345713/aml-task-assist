@@ -21,3 +21,6 @@ def agent_context(service, trace) -> AgentContext:
     return AgentContext(owner_id=service.actor.user_id, trace=trace,
                         services=service, state=state_store,
                         authorize=service.actor.require)
+
+from task_assist.infrastructure.batch_store import BatchStore
+batch_store = BatchStore(database)

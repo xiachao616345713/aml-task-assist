@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from task_assist import config
-from task_assist.aml.access import bnf_handoff, require_material_permission
+from task_assist.aml.access import material_handoff, require_material_permission
 from task_assist.aml.auth import PermissionDenied
 from task_assist.aml.backend import BackendError
 from task_assist.aml.service import TaskService
@@ -17,13 +17,14 @@ from task_assist.api.deps import get_service, run_traced
 from task_assist.api.schemas import HumanDecision, ReviewStart
 from task_assist.infrastructure.state_store import ResourceNotFound, StateConflict
 from task_assist.features.materials.extraction import TEXT_TYPES, extract_text
+from task_assist.features.materials.formats import EXTENSIONS, XLSX, ZIP
 
 router = APIRouter()
 
 @router.post("/api/workflows/reviews")
 def start_review(request: Request, body: ReviewStart, service: TaskService = Depends(get_service)):
     return run_traced(request, "start_review", lambda trace: request.app.state.review_workflow.start(
-        agent_context(service, trace), body.process_type, body.task_id, body.act_id, body.conversation_id))
+        agent_context(service, trace), body.process_type, body.task_id, body.act_id, body.conversation_id, purpose=body.purpose))
 
 
 @router.get("/api/workflows")
@@ -41,8 +42,8 @@ def workflow(workflow_id: str, service: TaskService = Depends(get_service)):
 
 @router.get("/api/workflows/{workflow_id}/handoff")
 def workflow_handoff(request: Request, workflow_id: str, service: TaskService = Depends(get_service)):
-    """BNF 原业务页面取得同一用户已上传的 Java 附件路径。"""
-    return run_traced(request, "workflow_handoff", lambda trace: bnf_handoff(service, state_store, workflow_id))
+    """原业务页面取得同一用户资料整理流程的附件路径。"""
+    return run_traced(request, "workflow_handoff", lambda trace: material_handoff(service, state_store, workflow_id))
 
 
 @router.post("/api/workflows/{workflow_id}/decision")
@@ -75,11 +76,14 @@ async def upload_material(request: Request, task_id: str, file: UploadFile = Fil
         require_material_permission(service, state_store, material)
         if material["status"] != "open":
             raise StateConflict("材料任务已提交")
-        content_type = file.content_type or ""
-        allowed = {"application/pdf", "image/png", "image/jpeg",
+        content_type = (file.content_type or "").split(";", 1)[0].lower()
+        suffix = Path(file.filename or "").suffix.lower()
+        if content_type in {"", "application/octet-stream", "application/x-zip-compressed"}:
+            content_type = EXTENSIONS.get(suffix, content_type)
+        allowed = {"application/pdf", "image/png", "image/jpeg", XLSX, ZIP,
                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
         if content_type not in allowed | TEXT_TYPES:
-            raise ValueError("只允许 PDF、PNG、JPEG、DOCX、TXT、CSV 或 JSON 材料")
+            raise ValueError("只允许 PDF、PNG、JPEG、DOCX、XLSX、TXT、Markdown、CSV、JSON 或 ZIP 材料")
         filename = Path(file.filename or "material").name[:200]
         if filename in {"", ".", ".."}:
             raise ValueError("文件名无效")

@@ -20,6 +20,10 @@ class RiskReviewAdapter:
             return WorkflowPlan()
         raise TaskRejected("该风险任务需要人工核查，当前没有自动办理规则")
 
+    def prepare_prefill(self, context: AgentContext, task_id: str, act_id: str) -> WorkflowPlan:
+        context.services.verify_risk_task(context.trace, task_id, act_id)
+        return WorkflowPlan(("风险评级依据、尽职调查记录及相关证明材料",), "business_handoff")
+
     def validate_material(self, context: AgentContext, task_id: str, act_id: str) -> None:
         evidence = context.services.risk_evidence(context.trace, task_id, act_id)
         if evidence["grade"] != "高风险" or not evidence["risk_code_consistent"]:
@@ -44,6 +48,9 @@ class BnfReviewAdapter:
     def prepare(self, context: AgentContext, task_id: str, act_id: str) -> WorkflowPlan:
         context.services.verify_bnf_task(context.trace, task_id, act_id)
         return WorkflowPlan(("受益所有人核验差异说明及证明材料",), "business_handoff")
+
+    def prepare_prefill(self, context: AgentContext, task_id: str, act_id: str) -> WorkflowPlan:
+        return self.prepare(context, task_id, act_id)
 
     def validate_material(self, context: AgentContext, task_id: str, act_id: str) -> None:
         context.services.verify_bnf_task(context.trace, task_id, act_id)
